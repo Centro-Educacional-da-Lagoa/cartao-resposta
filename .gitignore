@@ -1,0 +1,84 @@
+# Credenciais e arquivos sensíveis
+credenciais_google.json
+*.json
+!requirements.json
+
+# Arquivos de debug e temporários
+debug_*.png
+debug_*.jpg
+debug_*.jpeg
+*.tmp
+*.temp
+
+# Arquivos de cache e build
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Ambiente virtual
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs e editores
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Sistema operacional
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Pasta gabaritos com arquivos de exemplo
+gabaritos/
+resposta_*.png
+resposta_*.jpg
+resposta_*.jpeg
+resposta_*.pdf
+
+# Logs
+*.log
+logs/
+
+# Arquivos de configuração específicos
+config_local.py
+settings_local.py
+
+# Arquivos PDF processados
+*.pdf
+
+# Backups
+*.bak
+*.backup
+
+# Arquivos temporários do Windows
+desktop.ini

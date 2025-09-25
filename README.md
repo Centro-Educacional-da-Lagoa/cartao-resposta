@@ -223,7 +223,7 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
 
 **Jean Dias**
 - GitHub: [@JEAND1AS](https://github.com/JEAND1AS)
-- Email: [seu.email@exemplo.com]
+- Email: [jeandias1.jd1@gmail.com]
 
 ## 🙏 Agradecimentos
 

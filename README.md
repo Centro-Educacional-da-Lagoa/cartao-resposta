@@ -212,21 +212,6 @@ echo $GEMINI_API_KEY
 - Evitar sombras ou reflexos
 - Usar modo debug para analisar detecções
 
-
-## 📋 Roadmap
-
-- [ ] Interface web com Flask/Django
-- [ ] Monitoramento automático de pasta no Google Drive
-- [ ] Suporte a diferentes layouts de cartão resposta
-- [ ] API REST para integração
-- [ ] Dashboard com estatísticas avançadas
-- [ ] Processamento em paralelo
-- [ ] Notificações por email/WhatsApp
-
-## 📄 Licença
-
-Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalhes.
-
 ## 👨‍💻 Autor
 
 **Jean Dias**

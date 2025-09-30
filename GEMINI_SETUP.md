@@ -21,7 +21,7 @@ GEMINI_API_KEY = "SUA_API_KEY_AQUI"
 
 Substitua por sua chave real:
 ```python
-GEMINI_API_KEY = "AIzaSyB-sua-chave-real-aqui"
+GEMINI_API_KEY = "sua-chave-real-aqui"
 ```
 
 ## 🚀 Como Usar
@@ -110,36 +110,4 @@ pip install google-generativeai
 - Verifique se imagens estão nítidas
 - Considere melhorar iluminação/scan
 
-## 📈 Monitoramento
 
-O sistema exibe relatórios de concordância:
-```
-🔍 COMPARAÇÃO OMR vs GEMINI (GABARITO):
-Questão | OMR | Gemini | Status
---------------------------------
-   01   |  A  |   A    | ✅
-   02   |  B  |   C    | ⚠️
-   03   |  ?  |   D    | ⚠️
-
-📊 ESTATÍSTICAS:
-Concordâncias: 25/30 (83.3%)
-Diferenças: 5
-✅ Alta concordância - usando resultado OMR
-```
-
-## 🎯 Recomendações
-
-### Para Máxima Precisão
-1. Use ambos OMR + Gemini
-2. Ative modo debug para validação
-3. Verifique imagens debug geradas
-
-### Para Economia/Velocidade
-1. Use apenas OMR em imagens de boa qualidade
-2. Reserve Gemini para casos duvidosos
-3. Processe lotes pequenos primeiro
-
-### Para Produção
-1. Teste em amostras pequenas primeiro
-2. Configure limites de concordância adequados
-3. Monitore custos de API regularmente

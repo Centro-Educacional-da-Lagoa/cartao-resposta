@@ -29,7 +29,3 @@ NOTA: Se não fizer isso, o script criará automaticamente!
 - Total Questões, Acertos, Erros, Percentual
 - Questões Acertadas, Questões Erradas
 
-## PLANILHA DETALHADA (OPCIONAL):
-- Uma aba separada com cada questão individual
-- Mostra gabarito vs resposta para cada questão
-- Ideal para análise detalhada de erros

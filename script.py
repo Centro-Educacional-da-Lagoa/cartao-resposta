@@ -22,20 +22,25 @@ import numpy as np
 import re
 import gspread
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.errors import HttpError
 from datetime import datetime
 import os
 import base64
 import io
+import tempfile
+import shutil
+import argparse
+from typing import List, Dict, Optional
 from sklearn.cluster import KMeans
 
 # Importação do processador de PDF
 try:
     from pdf_processor_simple import process_pdf_file, is_pdf_file, setup_pdf_support
     PDF_PROCESSOR_AVAILABLE = True
-    print("✅ Processador de PDF disponível")
 except ImportError:
     PDF_PROCESSOR_AVAILABLE = False
-    print("⚠️ Processador de PDF não disponível")
 
 # Importação condicional do Gemini
 try:
@@ -48,6 +53,17 @@ except ImportError:
     genai = None
 
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+EXTENSOES_SUPORTADAS = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf', '.webp')
+DRIVE_MIME_TO_EXT = {
+    'application/pdf': '.pdf',
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/bmp': '.bmp',
+    'image/tiff': '.tiff',
+    'image/webp': '.webp'
+}
 
 # ===========================================
 # SEÇÃO 0: PREPROCESSAMENTO DE ARQUIVOS (PDF/IMAGEM)
@@ -72,30 +88,21 @@ def preprocessar_arquivo(file_path: str, tipo: str = "aluno") -> str:
     
     # Se for PDF, converter para imagem
     if is_pdf_file(file_path) and PDF_PROCESSOR_AVAILABLE:
-        print(f"📄 Arquivo PDF detectado - convertendo para imagem...")
+        print(f"Arquivo PDF detectado - convertendo para imagem...")
         try:
             best_image, temp_files = process_pdf_file(file_path, keep_temp_files=False)
-            print(f"✅ PDF convertido com sucesso!")
-            print(f"   📁 Imagem gerada: {os.path.basename(best_image)}")
+            print(f" Imagem gerada: {os.path.basename(best_image)}")
             return best_image
         except Exception as e:
             print(f"❌ Erro ao converter PDF: {e}")
-            if "poppler" in str(e).lower():
-                print("\n💡 SOLUÇÃO PARA POPPLER:")
-                print("1. Baixe poppler: https://github.com/oschwartz10612/poppler-windows/releases")
-                print("2. Extraia para C:\\poppler")
-                print("3. Ou execute como admin: choco install poppler")
             raise e
     
     # Se for imagem, verificar se é válida
     elif file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff')):
-        print(f"🖼️ Arquivo de imagem detectado - verificando...")
         try:
             # Tentar carregar a imagem para validar
             img = Image.open(file_path)
             img.verify()  # Verificar se a imagem é válida
-            print(f"✅ Imagem válida!")
-            print(f"   📐 Dimensões: {img.size[0]}x{img.size[1]} pixels")
             return file_path
         except Exception as e:
             raise Exception(f"Arquivo de imagem inválido: {e}")
@@ -155,8 +162,7 @@ def recortar_cabecalho(image_path):
     
     # Salvar imagem de debug
     cabecalho.save("debug_cabecalho.png")
-    print(f"📸 Imagem do cabeçalho salva: debug_cabecalho.png (tamanho: {cabecalho.size})")
-    
+
     return cabecalho
 
 def extrair_campos_cabecalho(texto):
@@ -419,12 +425,11 @@ def detectar_respostas_pdf(image_path, debug=False):
     
     if debug:
         print(f"=== DEBUG PDF - ALTA RESOLUÇÃO ===")
-        print(f"Bolhas pintadas detectadas: {len(bolhas_pintadas)}")
         print(f"Área do crop: {crop.shape[1]}x{crop.shape[0]} pixels")
         print(f"Parâmetros usados - Área: {area_min}-{area_max}, Circ: {circularity_min:.2f}, Int: {intensity_max}")
         for i, (cx, cy, _, intensidade, area, circ, preenchimento) in enumerate(bolhas_pintadas):
-            print(f"Bolha {i+1}: posição ({cx}, {cy}), intensidade: {intensidade:.1f}, área: {area:.0f}, circularidade: {circ:.2f}, preenchimento: {preenchimento:.2f}")
-    
+            continue
+
     # Verificar se temos bolhas suficientes
     if len(bolhas_pintadas) < 6:  # Mínimo mais baixo para PDFs
         print(f"⚠️ Poucas bolhas detectadas em PDF ({len(bolhas_pintadas)}). Tentando processamento simplificado.")
@@ -502,7 +507,7 @@ def detectar_respostas_pdf(image_path, debug=False):
                     
                     respostas[questao - 1] = resposta
                     if debug:
-                        print(f"Questão {questao}: {resposta} (col {col_idx + 1}, linha {linha_idx + 1}, x: {cx}, intensidade: {intensidade:.1f}, preenchimento: {preenchimento:.2f})")
+                        continue
                     questao += 1
         
         return respostas
@@ -593,7 +598,7 @@ def detectar_respostas(image_path, debug=False):
         print(f"Bolhas pintadas detectadas: {len(bolhas_pintadas)}")
         print(f"Área do crop: {crop.shape[1]}x{crop.shape[0]} pixels")
         for i, (cx, cy, _, intensidade, area, circ, preenchimento) in enumerate(bolhas_pintadas):
-            print(f"Bolha {i+1}: posição ({cx}, {cy}), intensidade: {intensidade:.1f}, área: {area:.0f}, circularidade: {circ:.2f}, preenchimento: {preenchimento:.2f}")
+            continue
         salvar_debug_deteccao(image_path, bolhas_pintadas, crop)
     
     # Verificar se temos bolhas suficientes para processamento
@@ -735,7 +740,7 @@ def detectar_respostas(image_path, debug=False):
                 if debug:
                     intensidade = bolha_marcada[3]
                     preenchimento = bolha_marcada[6]
-                    print(f"Questão {q + 1}: {letra} (col {col_idx + 1}, linha {questao_idx + 1}, x: {cx}, intensidade: {intensidade:.1f}, preenchimento: {preenchimento:.2f})")
+                    
             
             # Se não encontrou nenhuma linha, deixar como '?' (já é o padrão)
             if respostas_finais[q] == '?' and debug:
@@ -777,7 +782,7 @@ def configurar_gemini():
     try:
         # Configure sua API key do Gemini aqui
         # Obtenha em: https://makersuite.google.com/app/apikey
-        GEMINI_API_KEY = "AIzaSyCj-A5_3ferd5ZPDww4v9wQymGld6LHALQ"  # Substitua pela sua chave
+        GEMINI_API_KEY = "AIzaSyCZJ0GhpbMi2koxkrdjjCqWYys6yIVM4v0"  # Substitua pela sua chave
         
         genai.configure(api_key=GEMINI_API_KEY)
         
@@ -988,6 +993,111 @@ def extrair_cabecalho_com_gemini(model, image_path):
         print(f"❌ Erro na extração do cabeçalho com Gemini: {e}")
         return None
 
+def extrair_cabecalho_com_ocr_fallback(image_path):
+    """
+    Função de fallback usando OCR tradicional quando Gemini falha
+    """
+    try:
+        print("🔄 Usando OCR como fallback...")
+        
+        # Carregar imagem
+        img = cv2.imread(image_path)
+        if img is None:
+            print(f"❌ Erro ao carregar imagem: {image_path}")
+            return None
+            
+        # Converter para escala de cinza
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Pegar apenas a parte superior da imagem (cabeçalho)
+        height = gray.shape[0]
+        header_region = gray[0:int(height * 0.3)]  # 30% superior
+        
+        # Melhorar contraste para OCR
+        header_region = cv2.threshold(header_region, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        
+        # Extrair texto
+        texto_completo = pytesseract.image_to_string(header_region, lang='por', config='--psm 6')
+        
+        # Processar texto extraído
+        linhas = texto_completo.split('\n')
+        dados = {
+            "escola": "N/A",
+            "aluno": "N/A", 
+            "turma": "N/A",
+            "nascimento": "N/A"
+        }
+        
+        # Procurar padrões no texto
+        for linha in linhas:
+            linha = linha.strip()
+            if not linha:
+                continue
+                
+            linha_lower = linha.lower()
+            
+            # Procurar escola
+            if any(palavra in linha_lower for palavra in ['escola', 'colégio', 'instituto', 'centro']):
+                if 'escola' in linha_lower or 'colégio' in linha_lower:
+                    dados["escola"] = linha
+                    
+            # Procurar nome do aluno  
+            if any(palavra in linha_lower for palavra in ['nome', 'aluno']):
+                # Pular se for apenas o rótulo
+                if len(linha) > 10 and not linha_lower.startswith('nome'):
+                    dados["aluno"] = linha
+                    
+            # Procurar turma
+            if any(palavra in linha_lower for palavra in ['turma', 'série', 'ano']):
+                # Extrair números da linha
+                numeros = re.findall(r'\d+', linha)
+                if numeros:
+                    dados["turma"] = numeros[0]
+                    
+            # Procurar data de nascimento
+            if any(palavra in linha_lower for palavra in ['nascimento', 'data']):
+                # Procurar padrão de data
+                data_match = re.search(r'\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}', linha)
+                if data_match:
+                    dados["nascimento"] = data_match.group()
+        
+        print(f"✅ OCR extraiu dados básicos")
+        return dados
+        
+    except Exception as e:
+        print(f"❌ Erro no OCR fallback: {e}")
+        return None
+
+def extrair_cabecalho_com_fallback(model, image_path):
+    """
+    Função principal que tenta Gemini primeiro, depois OCR como fallback
+    """
+    # Tentar Gemini primeiro
+    if model:
+        try:
+            dados_gemini = extrair_cabecalho_com_gemini(model, image_path)
+            if dados_gemini:
+                print("✅ Gemini extraiu dados com sucesso")
+                return dados_gemini
+            else:
+                print("⚠️ Gemini falhou, tentando OCR...")
+        except Exception as e:
+            print(f"⚠️ Gemini com erro ({str(e)[:50]}...), usando OCR")
+    
+    # Fallback para OCR
+    dados_ocr = extrair_cabecalho_com_ocr_fallback(image_path)
+    if dados_ocr:
+        return dados_ocr
+    
+    # Se tudo falhar, retornar dados vazios
+    print("❌ Ambos Gemini e OCR falharam")
+    return {
+        "escola": "N/A",
+        "aluno": "N/A", 
+        "turma": "N/A",
+        "nascimento": "N/A"
+    }
+
 def comparar_omr_vs_gemini(respostas_omr, respostas_gemini, tipo=""):
     """Compara resultados OMR vs Gemini e gera relatório"""
     if not respostas_gemini:
@@ -1044,39 +1154,350 @@ def comparar_omr_vs_gemini(respostas_omr, respostas_gemini, tipo=""):
         return respostas_gemini
 
 # ===========================================
-# SEÇÃO 4: INTEGRAÇÃO GOOGLE SHEETS
+# SEÇÃO 4: INTEGRAÇÃO GOOGLE DRIVE & SHEETS
 # ===========================================
 
-def configurar_google_sheets():
-    """Configura conexão com Google Sheets"""
+def carregar_credenciais(scopes: List[str]) -> Optional[Credentials]:
+    """Carrega credenciais do serviço do arquivo JSON."""
     try:
-        # Escopo das APIs
-        scope = [
-            'https://www.googleapis.com/auth/spreadsheets',
-            'https://www.googleapis.com/auth/drive'
-        ]
-        
-        # Carregar credenciais
-        credentials = Credentials.from_service_account_file('credenciais_google.json', scopes=scope)
-        client = gspread.authorize(credentials)
-        
-        print("✅ Conexão com Google Sheets estabelecida!")
-        return client
-        
+        credentials = Credentials.from_service_account_file('credenciais_google.json', scopes=scopes)
+        return credentials
     except FileNotFoundError:
         print("❌ Arquivo 'credenciais_google.json' não encontrado!")
         print("📝 Certifique-se de que o arquivo está no diretório atual")
         return None
     except Exception as e:
+        print(f"❌ Erro ao carregar credenciais: {e}")
+        return None
+
+
+def configurar_google_sheets():
+    """Configura conexão com Google Sheets"""
+    scope = [
+        'https://www.googleapis.com/auth/spreadsheets',
+        'https://www.googleapis.com/auth/drive'
+    ]
+    credentials = carregar_credenciais(scope)
+    if not credentials:
+        return None
+
+    try:
+        client = gspread.authorize(credentials)
+        return client
+    except Exception as e:
         print(f"❌ Erro ao conectar com Google Sheets: {e}")
         return None
+
+
+def configurar_google_drive_service(scopes: Optional[List[str]] = None):
+    """Configura conexão com Google Drive e retorna serviço da API."""
+    scopes = scopes or ['https://www.googleapis.com/auth/drive.readonly']
+    credentials = carregar_credenciais(scopes)
+    if not credentials:
+        return None
+
+    try:
+        service = build('drive', 'v3', credentials=credentials, cache_discovery=False)
+        return service
+    except HttpError as http_err:
+        print(f"❌ Erro HTTP ao conectar no Google Drive: {http_err}")
+    except Exception as e:
+        print(f"❌ Erro ao configurar Google Drive: {e}")
+    return None
+
+def configurar_google_drive_service_completo():
+    """Configura conexão com Google Drive com permissões completas para mover arquivos."""
+    scopes = [
+        'https://www.googleapis.com/auth/drive',
+        'https://www.googleapis.com/auth/drive.file'
+    ]
+    credentials = carregar_credenciais(scopes)
+    if not credentials:
+        return None
+
+    try:
+        service = build('drive', 'v3', credentials=credentials, cache_discovery=False)
+        return service
+    except HttpError as http_err:
+        print(f"❌ Erro HTTP ao conectar no Google Drive: {http_err}")
+    except Exception as e:
+        print(f"❌ Erro ao configurar Google Drive: {e}")
+    return None
+
+def encontrar_ou_criar_pasta_processados(service, pasta_origem_id: str) -> str:
+    """Usa a pasta 'cartoes-processados' específica no Google Drive."""
+    pasta_processados_id = "1fVFfewF2qUe-wgORQ5p15on5apOQ2G_i"
+    
+    try:
+        # Verificar se a pasta existe e é acessível
+        pasta_info = service.files().get(fileId=pasta_processados_id, fields='id, name').execute()
+        print(f"📁 Pasta encontrada: {pasta_info.get('name')}")
+        return pasta_processados_id
+        
+    except Exception as e:
+        print(f"❌ Erro ao acessar pasta 'cartoes-processados' (ID: {pasta_processados_id}): {e}")
+        print("   Verifique se a pasta existe e o ID está correto")
+        return None
+
+def mover_arquivo_no_drive(service, arquivo_id: str, pasta_origem_id: str, pasta_destino_id: str, nome_arquivo: str) -> bool:
+    """Move um arquivo de uma pasta para outra no Google Drive."""
+    try:
+        # Obter pais atuais do arquivo
+        file_metadata = service.files().get(fileId=arquivo_id, fields='parents').execute()
+        previous_parents = ",".join(file_metadata.get('parents'))
+        
+        # Mover arquivo (remover da pasta origem e adicionar à pasta destino)
+        service.files().update(
+            fileId=arquivo_id,
+            addParents=pasta_destino_id,
+            removeParents=previous_parents,
+            fields='id, parents'
+        ).execute()
+        return True
+        
+    except Exception as e:
+        print(f"❌ Erro ao mover arquivo {nome_arquivo}: {e}")
+        return False
+
+def obter_metadados_pasta_drive(service, pasta_id: str) -> dict:
+    """Obtém metadados de todos os arquivos da pasta do Google Drive."""
+    metadados = {}
+    try:
+        query = f"parents in '{pasta_id}' and trashed=false"
+        campos = "nextPageToken, files(id, name, mimeType, size, modifiedTime)"
+        
+        page_token = None
+        while True:
+            response = service.files().list(
+                q=query,
+                fields=campos,
+                pageToken=page_token
+            ).execute()
+            
+            arquivos = response.get('files', [])
+            for arquivo in arquivos:
+                nome = arquivo.get('name', '')
+                if nome.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf')):
+                    metadados[nome] = {
+                        'id': arquivo['id'],
+                        'nome': nome,
+                        'mime_type': arquivo.get('mimeType', ''),
+                        'tamanho': arquivo.get('size', '0'),
+                        'modificado': arquivo.get('modifiedTime', '')
+                    }
+            
+            page_token = response.get('nextPageToken')
+            if not page_token:
+                break
+                
+        print(f"📋 Metadados obtidos para {len(metadados)} arquivos")
+        return metadados
+        
+    except Exception as e:
+        print(f"❌ Erro ao obter metadados: {e}")
+        return {}
+
+def mover_arquivos_processados_drive(service, pasta_origem_id: str, metadados: dict):
+    """Move arquivos processados (exceto gabarito) para pasta 'cartoes-processados'."""
+    try:
+        # Configurar serviço com permissões completas
+        service_completo = configurar_google_drive_service_completo()
+        if not service_completo:
+            print("❌ Não foi possível obter permissões para mover arquivos")
+            return
+        
+        # Encontrar ou criar pasta de processados
+        pasta_processados_id = encontrar_ou_criar_pasta_processados(service_completo, pasta_origem_id)
+        if not pasta_processados_id:
+            print("❌ Não foi possível criar pasta 'cartoes-processados'")
+            return
+        
+        arquivos_movidos = 0
+        
+        # Mover todos os arquivos exceto o gabarito
+        for nome_arquivo, dados in metadados.items():
+            # Pular arquivo de gabarito
+            if nome_arquivo.lower().startswith('gabarito'):
+                continue
+            
+            # Mover arquivo
+            if mover_arquivo_no_drive(
+                service_completo, 
+                dados['id'], 
+                pasta_origem_id, 
+                pasta_processados_id, 
+                nome_arquivo
+            ):
+                arquivos_movidos += 1
+        
+        print(f"✅ {arquivos_movidos} arquivos movidos para 'cartoes-processados' no Drive")
+        
+    except Exception as e:
+        print(f"❌ Erro ao mover arquivos processados: {e}")
+
+
+def sanitizar_nome_arquivo(nome: str, extensao_padrao: str = "") -> str:
+    """Remove caracteres inválidos e garante extensão válida."""
+    nome_limpo = re.sub(r'[<>:"/\\|?*]+', '_', nome).strip()
+    if not nome_limpo:
+        nome_limpo = 'arquivo'
+    if extensao_padrao and not nome_limpo.lower().endswith(extensao_padrao.lower()):
+        nome_limpo += extensao_padrao
+    return nome_limpo
+
+
+def baixar_cartoes_da_pasta_drive(service, pasta_id: str, destino: str, formatos_validos: Optional[Dict[str, str]] = None) -> List[str]:
+    """Baixa todos os cartões (gabarito + alunos) de uma pasta do Google Drive."""
+    if not service:
+        print("❌ Serviço do Google Drive não configurado.")
+        return []
+
+    if not pasta_id:
+        print("❌ ID da pasta do Google Drive não informado.")
+        return []
+
+    os.makedirs(destino, exist_ok=True)
+    formatos_validos = formatos_validos or DRIVE_MIME_TO_EXT
+    arquivos_baixados: List[str] = []
+
+    query = f"'{pasta_id}' in parents and trashed = false"
+    campos = "nextPageToken, files(id, name, mimeType, modifiedTime)"
+    page_token = None
+
+
+    try:
+        while True:
+            response = service.files().list(
+                q=query,
+                fields=campos,
+                pageToken=page_token
+            ).execute()
+
+            arquivos = response.get('files', [])
+            if not arquivos:
+                break
+
+            for arquivo in arquivos:
+                mime_type = arquivo.get('mimeType', '')
+                nome_original = arquivo.get('name', 'arquivo')
+                extensao_padrao = formatos_validos.get(mime_type, '')
+
+                base, ext = os.path.splitext(nome_original)
+                ext_final = ext.lower() if ext else extensao_padrao
+
+                if not ext_final:
+                    continue
+
+                if ext_final and ext_final.lower() not in EXTENSOES_SUPORTADAS and ext_final not in formatos_validos.values():
+                    print(f"⚠️ Ignorando '{nome_original}' (tipo não suportado: {mime_type})")
+                    continue
+
+                nome_final = sanitizar_nome_arquivo(nome_original, extensao_padrao=ext_final)
+                caminho_destino = os.path.join(destino, nome_final)
+
+                # Resolver conflitos de nome
+                contador = 1
+                while os.path.exists(caminho_destino):
+                    nome_sem_ext, ext_arquivo = os.path.splitext(nome_final)
+                    caminho_destino = os.path.join(destino, f"{nome_sem_ext}_{contador}{ext_arquivo}")
+                    contador += 1
+
+                print(f"⬇️ Baixando: {nome_final}")
+                request = service.files().get_media(fileId=arquivo['id'])
+                fh = io.BytesIO()
+                downloader = MediaIoBaseDownload(fh, request)
+
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                    if status:
+                        progresso = int(status.progress() * 100)
+                        print(f"   Progresso: {progresso}%", end='\r')
+
+                with open(caminho_destino, 'wb') as destino_arquivo:
+                    destino_arquivo.write(fh.getbuffer())
+
+                arquivos_baixados.append(caminho_destino)
+
+            page_token = response.get('nextPageToken')
+            if not page_token:
+                break
+
+    except HttpError as http_err:
+        print(f"❌ Erro HTTP ao baixar arquivos do Drive: {http_err}")
+        return []
+    except Exception as e:
+        print(f"❌ Erro inesperado ao baixar arquivos do Drive: {e}")
+        return []
+
+    print(f"✅ Download concluído: {len(arquivos_baixados)} arquivos salvos em {destino}")
+    return arquivos_baixados
+
+
+def baixar_e_processar_pasta_drive(
+    pasta_id: str,
+    usar_gemini: bool = True,
+    debug_mode: bool = False,
+    enviar_para_sheets: bool = True,
+    manter_pasta_temporaria: bool = False,
+    mover_processados: bool = True,
+    apenas_gabarito: bool = False
+):
+    """Workflow completo: baixa do Drive, processa cartões e envia resultados."""
+
+    service = configurar_google_drive_service()
+    if not service:
+        print("❌ Não foi possível configurar o Google Drive. Abortando.")
+        return []
+
+    pasta_temporaria = tempfile.mkdtemp(prefix="cartoes_drive_")
+    print(f"📁 Pasta temporária criada: {pasta_temporaria}")
+
+    try:
+        # Obter metadados dos arquivos durante o download
+        arquivos_metadata = obter_metadados_pasta_drive(service, pasta_id)
+        arquivos_baixados = baixar_cartoes_da_pasta_drive(service, pasta_id, pasta_temporaria)
+        
+        if not arquivos_baixados:
+            print("❌ Nenhum arquivo válido foi baixado do Drive.")
+            return []
+
+        # Se é apenas para gabarito, retornar o diretório temporário
+        if apenas_gabarito:
+            return pasta_temporaria
+
+        if enviar_para_sheets:
+            resultados = processar_pasta_gabaritos_com_sheets(
+                pasta_temporaria,
+                usar_gemini=usar_gemini,
+                debug_mode=debug_mode
+            )
+        else:
+            resultados = processar_pasta_gabaritos_sem_sheets(
+                pasta_temporaria,
+                usar_gemini=usar_gemini,
+                debug_mode=debug_mode
+            )
+
+        # Mover arquivos processados se houve sucesso e está habilitado
+        if resultados and mover_processados:
+            print(f"\n📦 Movendo arquivos processados no Google Drive...")
+            mover_arquivos_processados_drive(service, pasta_id, arquivos_metadata)
+
+        return resultados
+
+    finally:
+        if manter_pasta_temporaria:
+            print(f"🗂️ Mantendo pasta temporária em: {pasta_temporaria}")
+        else:
+            shutil.rmtree(pasta_temporaria, ignore_errors=True)
 
 def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=None):
     """Envia dados para Google Sheets"""
     try:
         if planilha_id:
             sheet = client.open_by_key(planilha_id)
-            print("✅ Planilha encontrada pelo ID!")
+            pass
         else:
             planilhas = client.list_spreadsheet_files()
             print(f"📊 Você tem {len(planilhas)} planilhas no Drive")
@@ -1095,7 +1516,7 @@ def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=
         # Verificar se há cabeçalho
         if not worksheet.get_all_values():
             cabecalho = [
-                "Data", "Nome da Escola", "Nome Completo", "Total de Acertos", "Total de Erros", "Porcentagem"
+                "Data", "Escola", "Nome completo", "Nascimento", "Turma", "Acertos", "Erros", "Porcentagem"
             ]
             worksheet.append_row(cabecalho)
             print("📋 Cabeçalho criado na planilha")
@@ -1103,15 +1524,29 @@ def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=
         # Preparar dados completos
         agora = datetime.now().strftime("%d/%m/%Y")
         
-        # Limpar nome da escola (remover "RESULTADO FINAL")
-        escola_limpa = dados_aluno["Escola"].replace("RESULTADO FINAL", "").strip()
+        # Garantir que os dados estejam no formato correto
+        escola = dados_aluno.get("Escola", "N/A")
+        if escola == "N/A" or not escola.strip():
+            escola = "N/A"
+        
+        aluno = dados_aluno.get("Aluno", "N/A")
+        if aluno == "N/A" or not aluno.strip():
+            aluno = "N/A"
+            
+        nascimento = dados_aluno.get("Nascimento", "N/A")
+        if nascimento == "N/A" or not nascimento.strip():
+            nascimento = "N/A"
+            
+        turma = dados_aluno.get("Turma", "N/A")
+        if turma == "N/A" or not turma.strip():
+            turma = "N/A"
         
         linha_dados = [
             agora,
-            escola_limpa,
-            dados_aluno["Aluno"],
-            dados_aluno.get("Nascimento", "N/A"),
-            dados_aluno.get("Turma", "N/A"),
+            escola,
+            aluno, 
+            nascimento,
+            turma,
             resultado_comparacao["acertos"],
             resultado_comparacao["erros"],
             f"{resultado_comparacao['percentual']:.1f}%"
@@ -1119,12 +1554,11 @@ def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=
         
         # Adicionar linha
         worksheet.append_row(linha_dados)
-        print(f"✅ Dados enviados para Google Sheets com sucesso!")
         print(f"📊 Registro adicionado:")
-        print(f"   🏫 Escola: {escola_limpa}")
-        print(f"   👤 Aluno: {dados_aluno['Aluno']}")
-        print(f"   📅 Nascimento: {dados_aluno.get('Nascimento', 'N/A')}")
-        print(f"   📚 Turma: {dados_aluno.get('Turma', 'N/A')}")
+        print(f"   🏫 Escola: {escola}")
+        print(f"   👤 Aluno: {aluno}")
+        print(f"   📅 Nascimento: {nascimento}")
+        print(f"   📚 Turma: {turma}")
         print(f"   📊 Resultado: {resultado_comparacao['acertos']} acertos | {resultado_comparacao['erros']} erros | {resultado_comparacao['percentual']:.1f}%")
         
         return True
@@ -1137,7 +1571,7 @@ def criar_planilha_detalhada(client, dados_aluno, resultado_comparacao):
     """Cria aba detalhada com todas as questões"""
     try:
         # Abrir planilha existente
-        PLANILHA_ID = "1gUCK9ssOrZVxD-X2ccLkUVuJnKA-GUAzVfOY0NSDRHU"
+        PLANILHA_ID = "1VJ0_w9eoQcc-ouBnRoq5lFQdR2fVZkqEtR-KArZMuvk"
         sheet = client.open_by_key(PLANILHA_ID)
         
         # Nome da nova aba
@@ -1243,17 +1677,99 @@ def exibir_resultados(dados_aluno, resultado):
         for erro in erros_detalhados:
             print(f"Questão {erro['questao']:02d}: Gabarito {erro['gabarito']} ≠ Aluno {erro['aluno']} ✗")
 
+def exibir_gabarito_simples(respostas_gabarito):
+    """Exibe o gabarito em formato simples: 1-A, 2-B, 3-C"""
+    print("\n📋 GABARITO DAS QUESTÕES:")
+    print("=" * 30)
+    
+    # Agrupar as questões em linhas de 10 para melhor visualização
+    for i in range(0, len(respostas_gabarito), 10):
+        linha = []
+        for j in range(i, min(i + 10, len(respostas_gabarito))):
+            if respostas_gabarito[j] != '?':
+                linha.append(f"{j+1}-{respostas_gabarito[j]}")
+            else:
+                linha.append(f"{j+1}-?")
+        print("  ".join(linha))
+    
+    print("=" * 30)
+
+def processar_apenas_gabarito(drive_folder_id: str = "13KIDX3GtQWxIxlAsX-2XS0ypJvOnnqZX", debug_mode: bool = False):
+    """Processa apenas o gabarito e exibe as respostas em formato simples"""
+    print("📋 PROCESSANDO APENAS GABARITO")
+    print("=" * 40)
+    
+    try:
+        # Baixar arquivos do Google Drive
+        print(f"📥 Baixando arquivos da pasta do Drive: {drive_folder_id}")
+        diretorio_temp = baixar_e_processar_pasta_drive(
+            pasta_id=drive_folder_id,
+            usar_gemini=False,
+            debug_mode=debug_mode,
+            enviar_para_sheets=False,
+            manter_pasta_temporaria=True,
+            mover_processados=False,
+            apenas_gabarito=True
+        )
+        
+        if not diretorio_temp:
+            print("❌ Erro ao baixar arquivos do Drive")
+            return
+        
+        # Procurar arquivo de gabarito
+        arquivos = [f for f in os.listdir(diretorio_temp) 
+                    if f.lower().endswith(EXTENSOES_SUPORTADAS)]
+        
+        gabarito_file = None
+        for arquivo in arquivos:
+            if 'gabarito' in arquivo.lower():
+                gabarito_file = arquivo
+                break
+        
+        if not gabarito_file:
+            print("❌ Arquivo de gabarito não encontrado (deve conter 'gabarito' no nome)")
+            return
+        
+        print(f"📋 Gabarito encontrado: {gabarito_file}")
+        
+        # Preprocessar gabarito
+        gabarito_path = os.path.join(diretorio_temp, gabarito_file)
+        gabarito_img = preprocessar_arquivo(gabarito_path, "gabarito")
+        
+        # Detectar respostas do gabarito
+        if "page_" in gabarito_img and (gabarito_img.endswith(".png") or gabarito_img.endswith(".jpg")):
+            respostas_gabarito = detectar_respostas_pdf(gabarito_img, debug=debug_mode)
+        else:
+            respostas_gabarito = detectar_respostas(gabarito_img, debug=debug_mode)
+        
+        questoes_gabarito = sum(1 for r in respostas_gabarito if r != '?')
+        print(f"✅ Gabarito processado: {questoes_gabarito}/52 questões detectadas")
+        
+        # Exibir gabarito em formato simples
+        exibir_gabarito_simples(respostas_gabarito)
+        
+        if questoes_gabarito < 40:
+            print("⚠️ ATENÇÃO: Poucas questões detectadas no gabarito.")
+        
+        # Limpar arquivos temporários
+        if os.path.exists(diretorio_temp):
+            shutil.rmtree(diretorio_temp, ignore_errors=True)
+        
+    except Exception as e:
+        print(f"❌ Erro ao processar gabarito: {e}")
+
 # ===========================================
 # PROCESSAMENTO EM LOTE
 # ===========================================
 
-def processar_pasta_gabaritos(usar_gemini=True, debug_mode=False):
+def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool = True, debug_mode: bool = False):
     """
-    Processa todos os arquivos da pasta 'gabaritos'
+    Processa todos os arquivos de uma pasta com cartões (gabarito + alunos)
     - 1 gabarito (template) para comparar com múltiplos alunos
     - Sem comparações desnecessárias de dados
     
     Args:
+        diretorio: Caminho da pasta contendo gabarito e cartões dos alunos
         usar_gemini: Se deve usar Gemini para cabeçalho
         debug_mode: Se deve mostrar debug detalhado
         
@@ -1264,12 +1780,11 @@ def processar_pasta_gabaritos(usar_gemini=True, debug_mode=False):
     print("🚀 SISTEMA DE CORREÇÃO - PASTA GABARITOS")
     print("=" * 60)
     
-    # Diretório fixo: pasta gabaritos
-    diretorio_gabaritos = "./gabaritos"
+    diretorio_gabaritos = diretorio
     
     if not os.path.exists(diretorio_gabaritos):
-        print("❌ ERRO: Pasta 'gabaritos' não encontrada!")
-        print("💡 Crie a pasta 'gabaritos' e adicione os arquivos dos alunos e do gabarito")
+        print(f"❌ ERRO: Pasta '{diretorio_gabaritos}' não encontrada!")
+        print("💡 Crie a pasta informada e adicione os arquivos do gabarito e dos alunos")
         return []
     
     # Configurar suporte a PDF se disponível
@@ -1336,10 +1851,8 @@ def processar_pasta_gabaritos(usar_gemini=True, debug_mode=False):
     
     model_gemini = None
     if usar_gemini:
-        print("\n🤖 Configurando Gemini...")
         try:
             model_gemini = configurar_gemini()
-            print("✅ Gemini configurado!")
         except Exception as e:
             print(f"❌ Erro ao configurar Gemini: {e}")
             usar_gemini = False
@@ -1402,7 +1915,7 @@ def processar_pasta_gabaritos(usar_gemini=True, debug_mode=False):
             
             if usar_gemini and model_gemini:
                 try:
-                    dados_extraidos = extrair_cabecalho_com_gemini(model_gemini, aluno_img)
+                    dados_extraidos = extrair_cabecalho_com_fallback(model_gemini, aluno_img)
                     if dados_extraidos:
                         # Mapear chaves minúsculas do Gemini para maiúsculas do sistema
                         mapeamento = {
@@ -1428,7 +1941,6 @@ def processar_pasta_gabaritos(usar_gemini=True, debug_mode=False):
                 respostas_aluno = detectar_respostas(aluno_img, debug=debug_mode)
             
             questoes_aluno = sum(1 for r in respostas_aluno if r != '?')
-            print(f"✅ Respostas processadas: {questoes_aluno}/52 questões detectadas")
             
             # Calcular resultado
             resultado = comparar_respostas(respostas_gabarito, respostas_aluno)
@@ -1473,7 +1985,7 @@ def processar_pasta_gabaritos(usar_gemini=True, debug_mode=False):
     print(f"{'='*60}")
     
     if resultados_lote:
-        print(f"\n=== RESULTADOS DETALHADOS ===")
+        print(f"\n=== TOTAL DE ALUNOS: {len(resultados)} + RESULTADOS ===")
         
         # Ordenar por percentual (decrescente)
         resultados_ordenados = sorted(resultados_lote, key=lambda x: x["percentual"], reverse=True)
@@ -1498,7 +2010,6 @@ def processar_pasta_gabaritos(usar_gemini=True, debug_mode=False):
             percentuais = [r["percentual"] for r in resultados_validos]
             
             print(f"\n=== ESTATÍSTICAS ===")
-            print(f"Alunos processados: {len(resultados_validos)}/{len(arquivos_alunos)}")
             print(f"Média de acertos: {sum(acertos)/len(acertos):.1f}/52 questões")
             print(f"Média percentual: {sum(percentuais)/len(percentuais):.1f}%")
     
@@ -1665,6 +2176,9 @@ def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False):
         questoes_gabarito = sum(1 for r in respostas_gabarito if r != '?')
         print(f"✅ Gabarito processado: {questoes_gabarito}/52 questões detectadas")
         
+        # Exibir gabarito em formato simples
+        exibir_gabarito_simples(respostas_gabarito)
+        
         if questoes_gabarito < 40:
             print("⚠️ ATENÇÃO: Poucas questões detectadas no gabarito. Verifique a qualidade da imagem.")
         
@@ -1697,7 +2211,7 @@ def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False):
             
             if usar_gemini and model_gemini:
                 try:
-                    dados_extraidos = extrair_cabecalho_com_gemini(model_gemini, aluno_img)
+                    dados_extraidos = extrair_cabecalho_com_fallback(model_gemini, aluno_img)
                     if dados_extraidos:
                         dados_aluno.update(dados_extraidos)
                         print("✅ Dados extraídos pelo Gemini:")
@@ -1788,7 +2302,7 @@ def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False):
     
     return resultados_lote
 
-def processar_pasta_gabaritos_sem_sheets(usar_gemini=True, debug_mode=False):
+def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_gemini: bool = True, debug_mode: bool = False):
     """
     Versão da função que NÃO tenta enviar para Google Sheets
     (evita problema de cota do Drive)
@@ -1797,12 +2311,11 @@ def processar_pasta_gabaritos_sem_sheets(usar_gemini=True, debug_mode=False):
     print("🚀 SISTEMA DE CORREÇÃO - PASTA GABARITOS (SEM GOOGLE SHEETS)")
     print("=" * 60)
     
-    # Diretório fixo: pasta gabaritos
-    diretorio_gabaritos = "./gabaritos"
+    diretorio_gabaritos = diretorio
     
     if not os.path.exists(diretorio_gabaritos):
-        print("❌ ERRO: Pasta 'gabaritos' não encontrada!")
-        print("💡 Crie a pasta 'gabaritos' e adicione os arquivos dos alunos e do gabarito")
+        print(f"❌ ERRO: Pasta '{diretorio_gabaritos}' não encontrada!")
+        print("💡 Crie a pasta informada e adicione os arquivos do gabarito e dos alunos")
         return []
     
     # Configurar suporte a PDF se disponível
@@ -1869,10 +2382,8 @@ def processar_pasta_gabaritos_sem_sheets(usar_gemini=True, debug_mode=False):
     
     model_gemini = None
     if usar_gemini:
-        print("\n🤖 Configurando Gemini...")
         try:
             model_gemini = configurar_gemini()
-            print("✅ Gemini configurado!")
         except Exception as e:
             print(f"❌ Erro ao configurar Gemini: {e}")
             usar_gemini = False
@@ -1935,7 +2446,7 @@ def processar_pasta_gabaritos_sem_sheets(usar_gemini=True, debug_mode=False):
             
             if usar_gemini and model_gemini:
                 try:
-                    dados_extraidos = extrair_cabecalho_com_gemini(model_gemini, aluno_img)
+                    dados_extraidos = extrair_cabecalho_com_fallback(model_gemini, aluno_img)
                     if dados_extraidos:
                         # Mapear chaves minúsculas do Gemini para maiúsculas do sistema
                         mapeamento = {
@@ -2044,7 +2555,11 @@ def processar_pasta_gabaritos_sem_sheets(usar_gemini=True, debug_mode=False):
     
     return resultados_lote
 
-def processar_pasta_gabaritos_com_sheets(usar_gemini=True, debug_mode=False):
+def processar_pasta_gabaritos_com_sheets(
+    diretorio: str = "./gabaritos",
+    usar_gemini: bool = True,
+    debug_mode: bool = False
+):
     """
     Versão da função que ENVIA para Google Sheets com controle de rate limiting
     """
@@ -2053,12 +2568,11 @@ def processar_pasta_gabaritos_com_sheets(usar_gemini=True, debug_mode=False):
     print("🚀 SISTEMA DE CORREÇÃO - PASTA GABARITOS (COM GOOGLE SHEETS)")
     print("=" * 60)
     
-    # Diretório fixo: pasta gabaritos
-    diretorio_gabaritos = "./gabaritos"
+    diretorio_gabaritos = diretorio
     
     if not os.path.exists(diretorio_gabaritos):
-        print("❌ ERRO: Pasta 'gabaritos' não encontrada!")
-        print("💡 Crie a pasta 'gabaritos' e adicione os arquivos dos alunos e do gabarito")
+        print(f"❌ ERRO: Pasta '{diretorio_gabaritos}' não encontrada!")
+        print("💡 Crie a pasta informada e adicione os arquivos do gabarito e dos alunos")
         return []
     
     # Configurar suporte a PDF se disponível
@@ -2136,13 +2650,10 @@ def processar_pasta_gabaritos_com_sheets(usar_gemini=True, debug_mode=False):
     # ===========================================
     # CONFIGURAR GOOGLE SHEETS COM RATE LIMITING
     # ===========================================
-    
-    print("\n📊 Configurando Google Sheets...")
     try:
         client = configurar_google_sheets()
         if client:
-            print("✅ Google Sheets configurado!")
-            PLANILHA_ID = "1gUCK9ssOrZVxD-X2ccLkUVuJnKA-GUAzVfOY0NSDRHU"
+            PLANILHA_ID = "1VJ0_w9eoQcc-ouBnRoq5lFQdR2fVZkqEtR-KArZMuvk"
         else:
             print("❌ Erro ao configurar Google Sheets - continuando sem envio")
             client = None
@@ -2171,6 +2682,9 @@ def processar_pasta_gabaritos_com_sheets(usar_gemini=True, debug_mode=False):
         
         questoes_gabarito = sum(1 for r in respostas_gabarito if r != '?')
         print(f"✅ Gabarito processado: {questoes_gabarito}/52 questões detectadas")
+        
+        # Exibir gabarito em formato simples
+        exibir_gabarito_simples(respostas_gabarito)
         
         if questoes_gabarito < 40:
             print("⚠️ ATENÇÃO: Poucas questões detectadas no gabarito.")
@@ -2209,7 +2723,7 @@ def processar_pasta_gabaritos_com_sheets(usar_gemini=True, debug_mode=False):
             
             if usar_gemini and model_gemini:
                 try:
-                    dados_extraidos = extrair_cabecalho_com_gemini(model_gemini, aluno_img)
+                    dados_extraidos = extrair_cabecalho_com_fallback(model_gemini, aluno_img)
                     if dados_extraidos:
                         # Mapear chaves minúsculas do Gemini para maiúsculas do sistema
                         mapeamento = {
@@ -2306,7 +2820,6 @@ def processar_pasta_gabaritos_com_sheets(usar_gemini=True, debug_mode=False):
                     
                     # RATE LIMITING: Aguardar entre envios para evitar quota
                     if i > 1:  # Não aguardar no primeiro
-                        print("⏳ Aguardando 2 segundos (rate limiting)...")
                         time.sleep(2)
                     
                     if enviar_para_planilha(client, dados_aluno, resultado, planilha_id=PLANILHA_ID):
@@ -2382,10 +2895,9 @@ def processar_pasta_gabaritos_com_sheets(usar_gemini=True, debug_mode=False):
     # ===========================================
     
     if client:
-        print(f"\n📊 GOOGLE SHEETS HABILITADO")
         print(f"✅ Alunos enviados com sucesso: {alunos_enviados_sheets}/{len(arquivos_alunos)}")
         if alunos_enviados_sheets == len(arquivos_alunos):
-            print("🎉 Todos os resultados foram enviados para a planilha!")
+            pass
         else:
             print("⚠️ Alguns alunos podem não ter sido enviados devido a limites de quota")
     else:
@@ -2399,45 +2911,64 @@ def processar_pasta_gabaritos_com_sheets(usar_gemini=True, debug_mode=False):
 # ===========================================
 
 if __name__ == "__main__":
-    # ===========================================
-    # EXECUÇÃO AUTOMÁTICA - COM GOOGLE SHEETS E RATE LIMITING
-    # ===========================================
-    
-    print("🚀 SISTEMA DE CORREÇÃO DE CARTÃO RESPOSTA - MODO AUTOMÁTICO")
+    parser = argparse.ArgumentParser(
+        description="Sistema automatizado de correção de cartões resposta com Google Drive e Google Sheets."
+    )
+    parser.add_argument(
+        "--drive-folder",
+        dest="drive_folder_id",
+        default="13KIDX3GtQWxIxlAsX-2XS0ypJvOnnqZX",
+        help="ID da pasta do Google Drive contendo gabarito e cartões dos alunos"
+    )
+    parser.add_argument(
+        "--gabarito",
+        action="store_true",
+        help="Exibe apenas o gabarito das questões em formato simples (1-A, 2-B, 3-C)"
+    )
+
+    args = parser.parse_args()
+
+    print("🚀 SISTEMA AUTOMATIZADO DE CORREÇÃO DE CARTÃO RESPOSTA")
     print("=" * 60)
-    
-    # Configurar suporte a PDF se disponível
+    print("✅ Configuração automática:")
+    print("   • Google Sheets: ATIVADO")
+    print("   • Gemini AI: ATIVADO") 
+    print("   • Logs detalhados: ATIVADO")
+    print("   • Mover arquivos processados: ATIVADO")
+
     if PDF_PROCESSOR_AVAILABLE:
         print("\n🔧 Configurando suporte a PDF...")
         pdf_ok = setup_pdf_support()
         if not pdf_ok:
             print("⚠️ Suporte a PDF limitado - apenas imagens serão processadas")
-    
-    # Verificar se pasta gabaritos existe
-    if not os.path.exists("./gabaritos"):
-        print("❌ ERRO: Pasta 'gabaritos' não encontrada!")
-        print("💡 Crie a pasta 'gabaritos' e adicione:")
-        print("   📋 1 arquivo de gabarito (gabarito.png, gabarito.pdf, etc.)")
-        print("   📄 Arquivos dos alunos (qualquer nome)")
-        exit(1)
-    
-    print(f"\n🎯 PROCESSANDO PASTA GABARITOS AUTOMATICAMENTE")
-    print("⚙️ Configurações: Gemini=SIM, Debug=SIM, Google Sheets=SIM")
-    print("💡 Lógica: Qualquer arquivo que NÃO comece com 'gabarito' = aluno")
-    print("⏳ Rate limiting habilitado: 2s entre envios para Google Sheets")
-    print("🔍 Debug habilitado: Mostrando detecções de questões para cada aluno")
-    
-    # Executar processamento automático da pasta gabaritos (COM GOOGLE SHEETS)
+
     # Configurações fixas para automação total
-    resultados = processar_pasta_gabaritos_com_sheets(
-        usar_gemini=True,    # Sempre usar Gemini para extrair dados
-        debug_mode=True      # HABILITAR DEBUG para mostrar detecções
+    usar_gemini = True
+    enviar_para_sheets = True
+    debug_mode = True
+    mover_processados = True
+    manter_temp = False
+
+    # Sempre usar Google Drive
+    drive_folder_id = args.drive_folder_id or os.getenv("DRIVE_FOLDER_ID")
+
+    # Modo especial: apenas exibir gabarito
+    if args.gabarito:
+        processar_apenas_gabarito(drive_folder_id, debug_mode)
+        exit(0)
+
+        
+    resultados = baixar_e_processar_pasta_drive(
+        pasta_id=drive_folder_id,
+        usar_gemini=usar_gemini,
+        debug_mode=debug_mode,
+        enviar_para_sheets=enviar_para_sheets,
+        manter_pasta_temporaria=manter_temp,
+        mover_processados=mover_processados
     )
-    
+
     if resultados:
-        print(f"\n🎉 PROCESSAMENTO AUTOMÁTICO CONCLUÍDO!")
-        print(f"📊 {len(resultados)} alunos processados com sucesso.")
+        pass
     else:
         print("\n❌ Nenhum resultado obtido.")
-        exit(1)
     

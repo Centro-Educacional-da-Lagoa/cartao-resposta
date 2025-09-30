@@ -8,6 +8,7 @@
 - 🔍 **OCR avançado** com processamento de imagem otimizado  
 - 🤖 **Extração de cabeçalho** com Google Gemini AI
 - 📊 **Integração com Google Sheets** para armazenamento automático
+- ☁️ **Sincronização com Google Drive** (download automático da pasta configurada)
 - 🎯 **Alta precisão** na detecção de respostas marcadas
 - 📁 **Processamento em lote** de múltiplos alunos
 - 🔄 **Rate limiting** integrado para APIs
@@ -16,11 +17,11 @@
 
 ## 🎯 Como Funciona
 
-1. **Detecção**: Identifica automaticamente o gabarito (arquivo com "gabarito" no nome)
-2. **Processamento**: Extrai respostas usando visão computacional e clustering
-3. **Cabeçalho**: Usa Google Gemini para extrair dados do aluno (nome, escola, turma, nascimento)
-4. **Correção**: Compara respostas do aluno com o gabarito
-5. **Resultados**: Envia automaticamente para Google Sheets com rate limiting
+0. **Download**: Baixa gabarito e cartões direto de uma pasta do Google Drive
+1. **Processamento**: Extrai respostas usando visão computacional e clustering
+2. **Cabeçalho**: Usa Google Gemini para extrair dados do aluno (nome, escola, turma, nascimento)
+3. **Correção**: Compara respostas do aluno com o gabarito
+4. **Resultados**: Envia automaticamente para Google Sheets com rate limiting
 
 ## 🛠️ Instalação
 
@@ -43,7 +44,6 @@ cd cartao-resposta
 pip install -r requirements.txt
 ```
 
-### 3. Instale o Tesseract OCR
 
 #### Windows
 ```bash
@@ -79,7 +79,15 @@ Siga as instruções em [`GEMINI_SETUP.md`](GEMINI_SETUP.md) para:
 - Obter API key do Gemini
 - Configurar variáveis de ambiente
 
-### 3. Estrutura de pastas
+### 3. Google Drive API *(opcional)*
+
+Para baixar os cartões direto do Google Drive:
+- Ative também a **Google Drive API** no mesmo projeto
+- Compartilhe a pasta (ou subpasta) do Drive com o e-mail da service account
+- Copie o **ID da pasta** (ex.: `https://drive.google.com/drive/folders/ID_AQUI`)
+- Opcional: defina a variável de ambiente `DRIVE_FOLDER_ID` com esse ID para uso automático
+
+### 4. Estrutura de pastas
 
 ```
 cartao-resposta/
@@ -95,17 +103,29 @@ cartao-resposta/
 
 ## 🎮 Como Usar
 
-### Modo Automático (Recomendado)
+### Modo Local (Recomendado)
 
 ```bash
 python script.py
 ```
 
-O sistema irá:
+
+
+O sistema irá ler automaticamente a pasta `./gabaritos`,
+processar todos os arquivos e enviar para o Google Sheets.
+
+Fluxo completo:
 1. Detectar automaticamente gabarito e alunos
 2. Processar todos os cartões
 3. Enviar resultados para Google Sheets
 4. Mostrar relatório final
+
+
+
+O script irá baixar todos os arquivos permitidos daquela pasta do Drive para
+um diretório temporário, processar os cartões e remover os arquivos no final.
+
+
 
 ### Exemplo de Saída
 
@@ -145,18 +165,13 @@ O sistema irá:
 # Para Gemini AI
 export GEMINI_API_KEY="sua_api_key_aqui"
 
-# Para Google Drive (futuro)
-export DRIVE_FOLDER_ID="id_da_pasta_drive"
+# Opcional: ID da pasta do Google Drive
+export DRIVE_FOLDER_ID="SUA_DRIVER_ID"
 ```
 
 ### Customização no Código
 
-```python
-# Configurações principais no script.py
-debug_mode = True          # Ativar debug detalhado
-usar_gemini = True         # Extrair cabeçalho com IA
-usar_google_sheets = True  # Enviar para planilha
-```
+```bash
 
 ## 📊 Formato do Google Sheets
 
@@ -197,13 +212,6 @@ echo $GEMINI_API_KEY
 - Evitar sombras ou reflexos
 - Usar modo debug para analisar detecções
 
-## 🤝 Contribuindo
-
-1. Fork o projeto
-2. Crie uma branch (`git checkout -b feature/nova-funcionalidade`)
-3. Commit suas mudanças (`git commit -m 'Adiciona nova funcionalidade'`)
-4. Push para a branch (`git push origin feature/nova-funcionalidade`)
-5. Abra um Pull Request
 
 ## 📋 Roadmap
 

@@ -82,3 +82,9 @@ settings_local.py
 
 # Arquivos temporários do Windows
 desktop.ini
+
+#Variáveis de ambiente
+.env
+*.env
+.env.local
+.env.*.local

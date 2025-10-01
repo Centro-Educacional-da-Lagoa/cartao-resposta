@@ -19,3 +19,6 @@ pdf2image
 
 # Utilitários
 requests
+
+#Variável de ambiente
+python-dotenv

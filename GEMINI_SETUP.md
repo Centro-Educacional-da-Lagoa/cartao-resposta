@@ -2,7 +2,7 @@
 
 ## 📋 Pré-requisitos
 
-### 1. Instalar Biblioteca do Gemini
+### 1. Instalar Biblioteca do Gemini via ( pip install -r requirements.txt ) e caso não funcione, use o código abaixo.
 ```bash
 pip install google-generativeai
 ```
@@ -13,65 +13,21 @@ pip install google-generativeai
 3. Clique em "Create API Key"
 4. Copie a chave gerada
 
-### 3. Configurar API Key
-No arquivo `script.py`, encontre a linha:
-```python
-GEMINI_API_KEY = "SUA_API_KEY_AQUI"
-```
+### 3. Configurar API Key dentro do arquivo .env
 
-Substitua por sua chave real:
-```python
+```.env
 GEMINI_API_KEY = "sua-chave-real-aqui"
 ```
 
-## 🚀 Como Usar
+## 🎯 Funcionalidades do Gemini principal do gemini
+- Analisar o cabeçalho dos cartões-resposta e trazer as informações
 
-### Executar com Gemini
-```bash
-python script.py
-```
-
-O sistema perguntará:
-- `🔧 MODO DEBUG - Ativar detecção avançada? (s/n):`
-- `🤖 GEMINI - Ativar análise inteligente com Gemini? (s/n):`
-
-Digite `s` para ativar o Gemini.
-
-## 🎯 Funcionalidades do Gemini
-
-### 1. Análise Inteligente de Imagens
-- Usa Gemini Vision para analisar cartões resposta
-- Identifica alternativas marcadas com precisão
-- Ignora marcações de correção (círculos verdes)
-
-### 2. Validação Cruzada
-- Compara resultados OMR vs Gemini
-- Escolhe automaticamente o melhor resultado
-- Gera relatório de concordância
-
-### 3. Correção Automática
-- **Alta concordância (≥80%)**: Usa OMR
-- **Média concordância (50-79%)**: Usa híbrido OMR/Gemini
-- **Baixa concordância (<50%)**: Usa Gemini
-
-## 📊 Benefícios
-
-### Precisão Melhorada
-- Reduz falsos positivos do OMR
-- Detecta melhor alternativas pintadas vs não pintadas
-- Ignora marcações de professores
-
-### Confiabilidade
-- Dupla validação (OMR + IA)
-- Relatório de concordância entre métodos
-- Fallback automático se um método falhar
-
-### Flexibilidade
-- Pode ser ativado/desativado facilmente
-- Funciona mesmo se Gemini não estiver disponível
-- Integração transparente com sistema existente
 
 ## ⚠️ Considerações
+
+### Erros de análise
+- Cartões-resposta com cabeçalho em manuscrito podem ter erros
+- Orientar cartões-resposta com o cabeçalho digitado com as informações dos alunos para maior confiabilidade
 
 ### Custos
 - Gemini API tem custo por uso
@@ -81,33 +37,21 @@ Digite `s` para ativar o Gemini.
 ### Internet
 - Requer conexão ativa com internet
 - Upload das imagens para análise
-- Processo mais lento que OMR local
 
 ### Privacidade
 - Imagens são enviadas para servidores Google
 - Considere políticas de privacidade da instituição
-- Para dados sensíveis, use apenas modo OMR local
-
-## 🔧 Solução de Problemas
-
-### Erro: "google.generativeai not found"
-```bash
-pip install google-generativeai
-```
 
 ### Erro: "API key inválida"
-- Verifique se copiou a chave corretamente
+- Verifique se a API está correta no arquivo .env
+- Verifique se a biblioteca do .env está instalada
 - Certifique-se que não há espaços extras
 - Gere nova chave se necessário
 
 ### Erro: "Quota exceeded"
 - Limite gratuito atingido
 - Configure pagamento ou aguarde reset mensal
-- Use apenas modo OMR temporariamente
 
-### Baixa concordância OMR vs Gemini
-- Normal em imagens com qualidade ruim
-- Verifique se imagens estão nítidas
-- Considere melhorar iluminação/scan
+
 
 

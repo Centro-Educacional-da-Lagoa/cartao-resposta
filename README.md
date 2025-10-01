@@ -38,34 +38,61 @@ git clone https://github.com/JEAND1AS/cartao-resposta.git
 cd cartao-resposta
 ```
 
-### 2. Instale as dependências
+### 2. Criar e ativar ambiente virtual (Recomendado)
+
+#### Windows (PowerShell):
+```bash
+# Criar ambiente virtual
+python -m venv .venv
+
+# Ativar ambiente virtual
+.\.venv\Scripts\Activate.ps1
+
+# Verificar se está ativo (deve aparecer (.venv) no prompt)
+(.venv) PS C:\...\cartao-resposta>
+```
+
+#### Linux/macOS:
+```bash
+# Criar ambiente virtual
+python3 -m venv .venv
+
+# Ativar ambiente virtual
+source .venv/bin/activate
+
+# Verificar se está ativo (deve aparecer (.venv) no prompt)
+(.venv) user@computer:~/cartao-resposta$
+```
+
+### Comando para ser utilizado dentro do ambiente virtual
+
+### 4. Comandos úteis para ambiente virtual
+
+```bash
+# Ativar ambiente virtual
+.\.venv\Scripts\Activate.ps1
+
+# Desativar ambiente virtual
+deactivate
+
+```
+
+### 3. Instale as dependências locais e no ambiente virtual caso necessário
 
 ```bash
 pip install -r requirements.txt
 ```
 
 
-#### Windows
-```bash
-# Baixe de: https://github.com/UB-Mannheim/tesseract/wiki
-# Ou use chocolatey:
-choco install tesseract
-```
-
-#### Ubuntu/Debian
-```bash
-sudo apt update
-sudo apt install tesseract-ocr tesseract-ocr-por
-```
-
-#### macOS
-```bash
-brew install tesseract
-```
-
 ## ⚙️ Configuração
 
-### 1. Google Sheets API
+### 1. Configurar arquivo .env para guardar chaves secretas
+
+- A biblioteca do .env será instalada automaticamente após executar o requirements.text
+- Dentro do .env defina os nomes das variáveis de ambiente ex: (GEMINI_API_KEY = sua_key_aqui, GOOGLE_SHEETS_ID = "sua_key_aqui", DRIVE_FOLDER_ID = "sua_key_aqui")
+
+
+### 2. Google Sheets API
 
 Siga as instruções em [`INSTRUCOES_GOOGLE_SHEETS.md`](INSTRUCOES_GOOGLE_SHEETS.md) para:
 - Criar projeto no Google Cloud
@@ -73,19 +100,19 @@ Siga as instruções em [`INSTRUCOES_GOOGLE_SHEETS.md`](INSTRUCOES_GOOGLE_SHEETS
 - Gerar credenciais de service account
 - Salvar como `credenciais_google.json`
 
-### 2. Google Gemini AI
+### 3. Google Gemini AI
 
 Siga as instruções em [`GEMINI_SETUP.md`](GEMINI_SETUP.md) para:
 - Obter API key do Gemini
 - Configurar variáveis de ambiente
 
-### 3. Google Drive API *(opcional)*
+### 4. Google Drive API
 
 Para baixar os cartões direto do Google Drive:
 - Ative também a **Google Drive API** no mesmo projeto
 - Compartilhe a pasta (ou subpasta) do Drive com o e-mail da service account
 - Copie o **ID da pasta** (ex.: `https://drive.google.com/drive/folders/ID_AQUI`)
-- Opcional: defina a variável de ambiente `DRIVE_FOLDER_ID` com esse ID para uso automático
+- defina a variável de ambiente `DRIVE_FOLDER_ID` dentro do arquivo .env
 
 ### 4. Estrutura de pastas
 
@@ -159,15 +186,6 @@ um diretório temporário, processar os cartões e remover os arquivos no final.
 
 ## 🔧 Configurações Avançadas
 
-### Variáveis de Ambiente
-
-```bash
-# Para Gemini AI
-export GEMINI_API_KEY="sua_api_key_aqui"
-
-# Opcional: ID da pasta do Google Drive
-export DRIVE_FOLDER_ID="SUA_DRIVER_ID"
-```
 
 ### Customização no Código
 
@@ -230,8 +248,6 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
 ## 👨‍💻 Autor
 
 **Jean Dias**
-- GitHub: [@JEAND1AS](https://github.com/JEAND1AS)
-- Email: [jeandias1.jd1@gmail.com]
 
 ## 🙏 Agradecimentos
 

@@ -27,6 +27,8 @@ from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.errors import HttpError
 from datetime import datetime
 import os
+import os 
+from dotenv import load_dotenv
 import base64
 import io
 import tempfile
@@ -34,6 +36,8 @@ import shutil
 import argparse
 from typing import List, Dict, Optional
 from sklearn.cluster import KMeans
+
+load_dotenv()
 
 # Importação do processador de PDF
 try:
@@ -46,7 +50,6 @@ except ImportError:
 try:
     import google.generativeai as genai
     GEMINI_DISPONIVEL = True
-    print("✅ Gemini disponível")
 except ImportError:
     GEMINI_DISPONIVEL = True
     print("⚠️ Gemini não disponível (google-generativeai não instalado)")
@@ -150,158 +153,6 @@ def listar_arquivos_suportados(diretorio: str = ".") -> dict:
 # ===========================================
 # SEÇÃO 1: OCR - EXTRAÇÃO DE TEXTOS DO CABEÇALHO
 # ===========================================
-
-def recortar_cabecalho(image_path):
-    """OCR: Recorta região do cabeçalho para extração de textos"""
-    img = Image.open(image_path)
-    width, height = img.size
-    
-    # Crop mais amplo para capturar todo o cabeçalho
-    crop_box = (int(width*0.05), int(height*0.02), int(width*0.61), int(height*0.40))
-    cabecalho = img.crop(crop_box)
-    
-    # Salvar imagem de debug
-    cabecalho.save("debug_cabecalho.png")
-
-    return cabecalho
-
-def extrair_campos_cabecalho(texto):
-    """OCR: Extrai dados do aluno usando Tesseract"""
-    escola = aluno = nascimento = turma = "N/A"
-    linhas = [l.strip() for l in texto.split("\n") if len(l.strip()) > 2]
-    
-    print(f"🔍 DEBUG EXTRAÇÃO DE CAMPOS:")
-    print(f"Total de linhas válidas: {len(linhas)}")
-    for i, linha in enumerate(linhas):
-        print(f"  Linha {i}: '{linha}'")
-    
-    # === EXTRAÇÃO FLEXÍVEL POR POSICIONAMENTO ESTRUTURAL ===
-    
-    # Escola - Abordagem flexível baseada em posição e contexto
-    for i, l in enumerate(linhas):
-        print(f"🏫 Analisando linha {i} para escola: '{l}'")
-        
-        # ESTRATÉGIA 1: Detectar qualquer variação de "Nome escola" (muito flexível)
-        if re.search(r'Nome[a-z]*\s*(d[aeo]|de)?\s*(Escol[aeo]|escola)', l, re.I):
-            print(f"✅ Encontrou padrão flexível de 'Nome escola' na linha {i}")
-            
-            # Extrair tudo depois do padrão até encontrar palavras de parada
-            resto_linha = re.sub(r'^.*?Nome[a-z]*\s*(d[aeo]|de)?\s*(Escol[aeo]|escola)[:\s]*', '', l, flags=re.I)
-            
-            if resto_linha and len(resto_linha.strip()) > 2:
-                # Limpar palavras de parada comuns
-                escola = re.sub(r'\s*(RESULTADO\s+FINAL|TURMA|DATA|NASCIMENTO).*$', '', resto_linha, flags=re.I).strip()
-                escola = re.sub(r'[\|\:\!]+\s*$', '', escola).strip()  # Remove caracteres finais
-                
-                if len(escola) > 2:
-                    print(f"✅ Escola extraída da mesma linha: '{escola}'")
-                    break
-            
-            # Se não achou na mesma linha, procurar na próxima
-            if i+1 < len(linhas):
-                candidata = linhas[i+1].strip()
-                if len(candidata) > 2 and not re.search(r'nome|completo|data|nascimento|turma', candidata, re.I):
-                    escola = candidata
-                    print(f"✅ Escola extraída da linha seguinte: '{escola}'")
-                    break
-    
-    # Nome completo - Abordagem flexível baseada em posição e contexto
-    for i, l in enumerate(linhas):
-        print(f"👤 Analisando linha {i} para nome: '{l}'")
-        
-        # ESTRATÉGIA 1: Detectar qualquer variação de "Nome" (SEM escola)
-        if re.search(r'Nome[a-z]*\s*(completo)?[:\s]*', l, re.I) and not re.search(r'escola', l, re.I):
-            print(f"✅ Encontrou padrão flexível de 'Nome' na linha {i}")
-            
-            # Extrair conteúdo depois do padrão - CORRIGIDO para remover "completo" também
-            resto_linha = re.sub(r'^.*?Nome[a-z]*\s*(completo\s*)?[:\s]*', '', l, flags=re.I)
-            
-            if resto_linha and len(resto_linha.strip()) > 2:
-                # Limpar palavras de parada
-                nome = re.sub(r'\s*(DATA|NASCIMENTO|TURMA|RESULTADO).*$', '', resto_linha, flags=re.I).strip()
-                nome = re.sub(r'[\|\:\!]+\s*$', '', nome).strip()
-                
-                # Verificar se parece ser um nome (pelo menos 2 palavras ou 1 palavra com mais de 3 chars)
-                # E NÃO contenha palavras relacionadas a escola
-                if (len(nome) > 2 and 
-                    not re.search(r'escola|municipal|estadual|particular|escol|fundamental|médio', nome, re.I) and
-                    (len(nome.split()) >= 2 or len(nome) > 3)):
-                    aluno = nome
-                    print(f"✅ Aluno extraído da mesma linha: '{aluno}'")
-                    break
-            
-            # Se não achou na mesma linha, procurar nas próximas 2 linhas
-            for next_i in range(i+1, min(i+3, len(linhas))):
-                candidato_bruto = linhas[next_i].strip()
-                
-                # APLICAR O MESMO REGEX na linha seguinte também
-                candidato = re.sub(r'^.*?Nome[a-z]*\s*(completo\s*)?[:\s]*', '', candidato_bruto, flags=re.I)
-                
-                # Se depois do regex ainda sobrou algo válido
-                if candidato and len(candidato.strip()) > 2:
-                    candidato = re.sub(r'\s*(DATA|NASCIMENTO|TURMA|RESULTADO).*$', '', candidato, flags=re.I).strip()
-                    candidato = re.sub(r'[\|\:\!]+\s*$', '', candidato).strip()
-                    
-                    # Verificar se é um nome válido
-                    if (len(candidato) > 2 and 
-                        not re.search(r'data|nascimento|turma|avaliação|cartão|escola|municipal|resultado|fundamental', candidato, re.I) and
-                        not candidato.upper() == candidato and  # Não é tudo maiúsculo (evita títulos)
-                        (len(candidato.split()) >= 2 or len(candidato) > 3)):  # 2+ palavras OU 1 palavra longa
-                        
-                        aluno = candidato
-                        print(f"✅ Aluno extraído da linha {next_i} (com regex): '{aluno}'")
-                        break
-                else:
-                    # Se não há padrão "Nome", pegar linha direta (fallback)
-                    if (len(candidato_bruto) > 2 and 
-                        not re.search(r'data|nascimento|turma|avaliação|cartão|escola|municipal|resultado|fundamental', candidato_bruto, re.I) and
-                        not candidato_bruto.upper() == candidato_bruto and  # Não é tudo maiúsculo
-                        (len(candidato_bruto.split()) >= 2 or len(candidato_bruto) > 3)):
-                        
-                        aluno = candidato_bruto
-                        print(f"✅ Aluno extraído da linha {next_i} (direto): '{aluno}'")
-                        break
-            
-            if aluno:  # Se encontrou, sair do loop principal
-                break
-        
-        # ESTRATÉGIA 2: Detectar linha que parece ser um nome (heurística inteligente)
-        elif (i > 5 and  # Não pegar títulos no início
-              len(l.split()) >= 2 and  # Pelo menos 2 palavras
-              len(l) > 5 and len(l) < 50 and  # Tamanho razoável
-              l[0].isupper() and  # Primeira letra maiúscula
-              not l.upper() == l and  # Não é tudo maiúsculo
-              not re.search(r'avaliação|diagnóstica|cartão|resposta|escola|municipal|turma|resultado|ensino|fundamental|instruções|julho|data|nascimento|preencha', l, re.I)):
-            
-            aluno = l.strip()
-            print(f"✅ Aluno detectado por heurística de nome (linha {i}): '{aluno}'")
-            break
-    
-    # Data de nascimento
-    for l in linhas:
-        nasc_match = re.search(r'(\d{2})[\/\-](\d{1,2})[\/\-](\d{2,4})', l)
-        if nasc_match:
-            nascimento = f"{nasc_match.group(1)}/{nasc_match.group(2)}/{nasc_match.group(3)}"
-            break
-    
-    # Turma
-    for i, l in enumerate(linhas):
-        if "turma" in l.lower():
-            turma_match = re.search(r'Turma[: ]*([A-Za-z0-9ºª\-_/]{1,8})', l, re.I)
-            if turma_match and turma_match.group(1).strip():
-                turma = turma_match.group(1).strip()
-            elif i+1 < len(linhas):
-                candidato = linhas[i+1].strip()
-                if 1 < len(candidato) <= 8:
-                    turma = candidato
-            break
-    
-    return {
-        "Escola": escola,
-        "Aluno": aluno,
-        "Nascimento": nascimento,
-        "Turma": turma
-    }
 
 # ===========================================
 # SEÇÃO 2: OMR - DETECÇÃO DE ALTERNATIVAS MARCADAS
@@ -782,7 +633,10 @@ def configurar_gemini():
     try:
         # Configure sua API key do Gemini aqui
         # Obtenha em: https://makersuite.google.com/app/apikey
-        GEMINI_API_KEY = "AIzaSyCZJ0GhpbMi2koxkrdjjCqWYys6yIVM4v0"  # Substitua pela sua chave
+        GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+        
+        if not GEMINI_API_KEY:
+            print("GEMINI_API_KEY não encontrado ou arquivo .env faltando")  # Substitua pela sua chave
         
         genai.configure(api_key=GEMINI_API_KEY)
         
@@ -794,10 +648,6 @@ def configurar_gemini():
         
     except Exception as e:
         print(f"❌ Erro ao configurar Gemini: {e}")
-        print("💡 Certifique-se de:")
-        print("   1. Instalar: pip install google-generativeai")
-        print("   2. Configurar sua API key do Gemini")
-        print("   3. Verificar sua conexão com internet")
         return None
 
 def converter_imagem_para_base64(image_path):
@@ -813,106 +663,6 @@ def converter_imagem_para_base64(image_path):
         
     except Exception as e:
         print(f"❌ Erro ao converter imagem: {e}")
-        return None
-
-def analisar_cartao_com_gemini(model, image_path, tipo_analise="gabarito"):
-    """
-    Usa Gemini Vision para analisar cartão resposta
-    """
-    if not model:
-        print("⚠️ Gemini não configurado, pulando análise inteligente")
-        return None
-        
-    try:
-        # Converter imagem
-        image = converter_imagem_para_base64(image_path)
-        if not image:
-            return None
-        
-        # Prompt especializado para cartão resposta
-        if tipo_analise == "gabarito":
-            prompt = """
-            Analise esta imagem de um cartão resposta (GABARITO) e identifique APENAS as bolinhas PRETAS marcadas.
-
-            INSTRUÇÕES ESPECÍFICAS:
-            1. Este é um cartão com 52 questões organizadas em 4 colunas (1-13, 14-26, 27-39, 40-52)
-            2. Cada questão tem 4 alternativas: A, B, C, D
-            3. DETECTE APENAS bolinhas completamente PRETAS/PINTADAS com tinta preta
-            4. IGNORE qualquer outra cor (verde, azul, vermelho, etc.)
-            5. IGNORE círculos vazios ou apenas contornados
-            6. IGNORE marcações que não sejam tinta preta sólida
-      
-
-            FOCO: Apenas marcações PRETAS sólidas e bem preenchidas.
-
-            FORMATO DE RESPOSTA:
-            Retorne apenas uma lista Python com 52 elementos, exemplo:
-            ['A', 'B', '?', 'C', 'D', 'A', '?', 'B', 'C', 'D', 'A', 'B', 'C', '?', 'D', 'A', 'B', 'C', 'D', 'A', 'B', '?', 'C', 'D', 'A', 'B', 'C', 'D', 'A', '?', 'D', 'A', 'B', 'C', 'D', 'A', 'A', 'B', 'C', 'D', 'B', 'A', 'B', 'C', 'D', 'C', 'A', 'B', 'C', 'D', 'D', '?']
-
-            Seja EXTREMAMENTE rigoroso - apenas bolinhas COMPLETAMENTE PRETAS.
-            """
-        else:  # resposta_aluno
-            prompt = """
-            Analise esta imagem de um cartão resposta de ALUNO e identifique APENAS as bolinhas PRETAS marcadas.
-
-            INSTRUÇÕES ESPECÍFICAS:
-            1. Este é um cartão com 52 questões organizadas em 4 colunas (1-13, 14-26, 27-39, 40-52)
-            2. Cada questão tem 4 alternativas: A, B, C, D
-            3. DETECTE APENAS bolinhas completamente PRETAS/PINTADAS pelo aluno
-            4. IGNORE qualquer cor que não seja PRETA (correções do professor em verde, azul, etc.)
-            5. IGNORE círculos vazios ou apenas contornados
-            6. IGNORE rabiscos, riscos ou outras marcações
-            7. FOQUE apenas em bolinhas SÓLIDAS PRETAS bem preenchidas
-
-            FOCO: Apenas as marcações ORIGINAIS PRETAS do aluno.
-
-            FORMATO DE RESPOSTA:
-            Retorne apenas uma lista Python com 52 elementos, exemplo:
-            ['A', 'B', '?', 'C', 'D', 'A', '?', 'B', 'C', 'D', 'A', 'B', 'C', '?', 'D', 'A', 'B', 'C', 'D', 'A', 'B', '?', 'C', 'D', 'A', 'B', 'C', 'D', 'A', '?', 'D', 'A', 'B', 'C', 'D', 'A', 'A', 'B', 'C', 'D', 'B', 'A', 'B', 'C', 'D', 'C', 'A', 'B', 'C', 'D', 'D', '?']
-
-            Seja EXTREMAMENTE rigoroso - apenas bolinhas COMPLETAMENTE PRETAS do aluno.
-            """
-        
-        # Fazer análise com Gemini
-        print(f"🤖 Analisando {tipo_analise} com Gemini...")
-        response = model.generate_content([prompt, image])
-        
-        # Extrair lista da resposta
-        resposta_texto = response.text.strip()
-        
-        # Tentar extrair lista Python da resposta
-        import ast
-        try:
-            # Procurar por lista no texto
-            inicio = resposta_texto.find('[')
-            fim = resposta_texto.rfind(']') + 1
-            
-            if inicio >= 0 and fim > inicio:
-                lista_str = resposta_texto[inicio:fim]
-                respostas = ast.literal_eval(lista_str)
-                
-                # Validar se tem 52 elementos
-                if len(respostas) == 52:
-                    print(f"✅ Gemini analisou {len(respostas)} questões!")
-                    return respostas
-                else:
-                    print(f"⚠️ Gemini retornou {len(respostas)} questões, esperado 52")
-                    # Ajustar para 52 elementos
-                    while len(respostas) < 52:
-                        respostas.append('?')
-                    return respostas[:52]
-            else:
-                print("❌ Não foi possível extrair lista da resposta do Gemini")
-                print(f"Resposta recebida: {resposta_texto}")
-                return None
-                
-        except Exception as e:
-            print(f"❌ Erro ao processar resposta do Gemini: {e}")
-            print(f"Resposta recebida: {resposta_texto}")
-            return None
-            
-    except Exception as e:
-        print(f"❌ Erro na análise com Gemini: {e}")
         return None
 
 def extrair_cabecalho_com_gemini(model, image_path):
@@ -1093,65 +843,10 @@ def extrair_cabecalho_com_fallback(model, image_path):
     print("❌ Ambos Gemini e OCR falharam")
     return {
         "escola": "N/A",
-        "aluno": "N/A", 
+        "aluno": "N/A",
         "turma": "N/A",
         "nascimento": "N/A"
     }
-
-def comparar_omr_vs_gemini(respostas_omr, respostas_gemini, tipo=""):
-    """Compara resultados OMR vs Gemini e gera relatório"""
-    if not respostas_gemini:
-        print("⚠️ Gemini não disponível, usando apenas OMR")
-        return respostas_omr
-    
-    diferencas = []
-    concordancias = 0
-    
-    print(f"\n🔍 COMPARAÇÃO OMR vs GEMINI ({tipo}):")
-    print("Questão | OMR | Gemini | Status")
-    print("-" * 32)
-    
-    for i in range(min(len(respostas_omr), len(respostas_gemini))):
-        omr = respostas_omr[i]
-        gemini = respostas_gemini[i]
-        
-        if omr == gemini:
-            status = "✅"
-            concordancias += 1
-        else:
-            status = "⚠️"
-            diferencas.append({
-                'questao': i + 1,
-                'omr': omr,
-                'gemini': gemini
-            })
-        
-        print(f"   {i+1:02d}   | {omr:^3} | {gemini:^6} | {status}")
-    
-    total = len(respostas_omr)
-    percentual_concordancia = (concordancias / total * 100) if total > 0 else 0
-    
-    print(f"\n📊 ESTATÍSTICAS:")
-    print(f"Concordâncias: {concordancias}/{total} ({percentual_concordancia:.1f}%)")
-    print(f"Diferenças: {len(diferencas)}")
-    
-    # Decidir qual usar baseado na concordância
-    if percentual_concordancia >= 80:
-        print("✅ Alta concordância - usando resultado OMR")
-        return respostas_omr
-    elif percentual_concordancia >= 50:
-        print("⚠️ Concordância média - usando híbrido OMR/Gemini")
-        # Criar versão híbrida (usar Gemini quando OMR detecta '?')
-        resultado_hibrido = []
-        for i in range(len(respostas_omr)):
-            if respostas_omr[i] == '?' and i < len(respostas_gemini):
-                resultado_hibrido.append(respostas_gemini[i])
-            else:
-                resultado_hibrido.append(respostas_omr[i])
-        return resultado_hibrido
-    else:
-        print("🤖 Baixa concordância - usando resultado Gemini")
-        return respostas_gemini
 
 # ===========================================
 # SEÇÃO 4: INTEGRAÇÃO GOOGLE DRIVE & SHEETS
@@ -2914,10 +2609,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Sistema automatizado de correção de cartões resposta com Google Drive e Google Sheets."
     )
+
+    default_drive_folder = os.getenv("DRIVE_FOLDER_ID", "13KIDX3GtQWxIxlAsX-2XS0ypJvOnnqZX")
+    
     parser.add_argument(
         "--drive-folder",
         dest="drive_folder_id",
-        default="13KIDX3GtQWxIxlAsX-2XS0ypJvOnnqZX",
+        default=default_drive_folder,
         help="ID da pasta do Google Drive contendo gabarito e cartões dos alunos"
     )
     parser.add_argument(
@@ -2928,16 +2626,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    print("🚀 SISTEMA AUTOMATIZADO DE CORREÇÃO DE CARTÃO RESPOSTA")
-    print("=" * 60)
-    print("✅ Configuração automática:")
-    print("   • Google Sheets: ATIVADO")
-    print("   • Gemini AI: ATIVADO") 
-    print("   • Logs detalhados: ATIVADO")
-    print("   • Mover arquivos processados: ATIVADO")
 
     if PDF_PROCESSOR_AVAILABLE:
-        print("\n🔧 Configurando suporte a PDF...")
         pdf_ok = setup_pdf_support()
         if not pdf_ok:
             print("⚠️ Suporte a PDF limitado - apenas imagens serão processadas")

@@ -6,11 +6,14 @@
 3. Substitua o conteúdo do arquivo 'exemplo_credenciais.json'
 4. Renomeie para 'credenciais_google.json'
 
-## PASSO 2: CRIAR PLANILHA (OPCIONAL)
+## PASSO 2: CRIAR PLANILHA
 1. Acesse: https://sheets.google.com
 2. Crie nova planilha com nome: "Correção Cartão Resposta"
 3. Compartilhe com o email da conta de serviço (encontrado no JSON)
 4. Dê permissão de "Editor"
+
+## PASSO 3: Configurar GOOGLE_SHEETS_ID
+1. Baixe todas as depedências (bibliotecas) do python incluso nesse projeto 
 
 NOTA: Se não fizer isso, o script criará automaticamente!
 

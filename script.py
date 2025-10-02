@@ -1389,10 +1389,17 @@ def exibir_gabarito_simples(respostas_gabarito):
     
     print("=" * 30)
 
-def processar_apenas_gabarito(drive_folder_id: str = "13KIDX3GtQWxIxlAsX-2XS0ypJvOnnqZX", debug_mode: bool = False):
+def processar_apenas_gabarito(drive_folder_id: str = None, debug_mode: bool = False):
     """Processa apenas o gabarito e exibe as respostas em formato simples"""
     print("📋 PROCESSANDO APENAS GABARITO")
     print("=" * 40)
+    
+    # Usar DRIVE_FOLDER_ID do .env se não fornecido
+    if not drive_folder_id:
+        drive_folder_id = os.getenv('DRIVE_FOLDER_ID')
+        if not drive_folder_id:
+            print("❌ DRIVE_FOLDER_ID não encontrado no arquivo .env")
+            return
     
     try:
         # Baixar arquivos do Google Drive
@@ -2610,7 +2617,7 @@ if __name__ == "__main__":
         description="Sistema automatizado de correção de cartões resposta com Google Drive e Google Sheets."
     )
 
-    default_drive_folder = os.getenv("DRIVE_FOLDER_ID", "13KIDX3GtQWxIxlAsX-2XS0ypJvOnnqZX")
+    default_drive_folder = os.getenv("DRIVE_FOLDER_ID")
     
     parser.add_argument(
         "--drive-folder",
@@ -2622,6 +2629,17 @@ if __name__ == "__main__":
         "--gabarito",
         action="store_true",
         help="Exibe apenas o gabarito das questões em formato simples (1-A, 2-B, 3-C)"
+    )
+    parser.add_argument(
+        "--monitor",
+        action="store_true",
+        help="Inicia monitoramento contínuo da pasta (verifica novos arquivos automaticamente)"
+    )
+    parser.add_argument(
+        "--intervalo",
+        type=int,
+        default=5,
+        help="Intervalo de verificação em minutos para modo monitor (padrão: 5)"
     )
 
     args = parser.parse_args()
@@ -2645,6 +2663,281 @@ if __name__ == "__main__":
     # Modo especial: apenas exibir gabarito
     if args.gabarito:
         processar_apenas_gabarito(drive_folder_id, debug_mode)
+        exit(0)
+
+    # Modo especial: monitoramento contínuo
+    if args.monitor:
+        print("=" * 60)
+        print("🤖 MODO MONITORAMENTO CONTÍNUO ATIVADO")
+        print(f"⏰ Intervalo: {args.intervalo} minutos")
+        print("💡 Pressione Ctrl+C para parar")
+        print("=" * 60)
+        
+        import time
+        import json
+        from datetime import datetime
+        
+        # Arquivo para rastrear arquivos já processados por ID
+        historico_file = "historico_monitoramento.json"
+        
+        def carregar_historico():
+            """Carrega IDs dos arquivos já processados"""
+            try:
+                if os.path.exists(historico_file):
+                    with open(historico_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        return set(data.get('arquivos_processados', []))
+            except Exception as e:
+                print(f"⚠️ Erro ao carregar histórico: {e}")
+            return set()
+        
+        def salvar_historico(arquivos_processados):
+            """Salva IDs dos arquivos processados"""
+            try:
+                data = {
+                    'ultima_verificacao': datetime.now().isoformat(),
+                    'total_processados': len(arquivos_processados),
+                    'arquivos_processados': list(arquivos_processados)
+                }
+                with open(historico_file, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                print(f"⚠️ Erro ao salvar histórico: {e}")
+        
+        def verificar_novos_arquivos():
+            """Verifica se há NOVOS arquivos para processar (por ID)"""
+            try:
+                # Configurar Google Drive
+                drive_service = configurar_google_drive_service_completo()
+                if not drive_service:
+                    print("❌ Erro ao conectar com Google Drive")
+                    return [], set()
+                
+                # Listar arquivos na pasta
+                query = f"'{drive_folder_id}' in parents and trashed = false"
+                results = drive_service.files().list(
+                    q=query,
+                    fields="files(id, name, mimeType, modifiedTime)",
+                    pageSize=100
+                ).execute()
+                
+                arquivos = results.get('files', [])
+                arquivos_processados = carregar_historico()
+                
+                novos_cartoes = []
+                tem_gabarito = False
+                
+                for arquivo in arquivos:
+                    arquivo_id = arquivo['id']
+                    nome = arquivo['name'].lower()
+                    
+                    # Verificar se é o gabarito (nunca marcar como processado)
+                    if 'gabarito' in nome and any(ext in nome for ext in ['.pdf', '.png', '.jpg', '.jpeg']):
+                        tem_gabarito = True
+                        continue
+                    
+                    # Verificar se é um cartão de aluno NOVO (por ID)
+                    if (arquivo_id not in arquivos_processados and 
+                        any(ext in nome for ext in ['.pdf', '.png', '.jpg', '.jpeg'])):
+                        novos_cartoes.append(arquivo)
+                
+                if not tem_gabarito and novos_cartoes:
+                    print("⚠️ Novos cartões encontrados mas GABARITO não está na pasta!")
+                    return [], arquivos_processados
+                
+                return novos_cartoes, arquivos_processados
+                
+            except Exception as e:
+                print(f"❌ Erro ao verificar arquivos: {e}")
+                return [], set()
+        
+        # Loop de monitoramento
+        contador_verificacoes = 0
+        try:
+            while True:
+                try:
+                    contador_verificacoes += 1
+                    timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                    print(f"\n🔍 Verificação #{contador_verificacoes} - {timestamp}")
+                    
+                    # Verificar NOVOS cartões (por ID)
+                    novos_cartoes, arquivos_processados = verificar_novos_arquivos()
+                    
+                    if novos_cartoes:
+                        print(f"🆕 Encontrados {len(novos_cartoes)} NOVOS cartões!")
+                        for arquivo in novos_cartoes:
+                            print(f"   -> {arquivo['name']} (ID: {arquivo['id'][:20]}...)")
+                        
+                        # Processar APENAS os novos cartões
+                        print("🚀 Processando APENAS os novos cartões...")
+                        try:
+                            # Imports necessários
+                            import tempfile
+                            import shutil
+                            from googleapiclient.http import MediaIoBaseDownload
+                            
+                            # Configurar serviços
+                            if usar_gemini:
+                                model_gemini = configurar_gemini()
+                            else:
+                                model_gemini = None
+                            
+                            if enviar_para_sheets:
+                                client = configurar_google_sheets()
+                                PLANILHA_ID = os.getenv('GOOGLE_SHEETS_ID')
+                            else:
+                                client = None
+                                PLANILHA_ID = None
+                            
+                            drive_service = configurar_google_drive_service_completo()
+                            
+                            # Pasta temporária
+                            pasta_temp = tempfile.mkdtemp(prefix="cartoes_novos_")
+                            print(f"📁 Pasta temporária: {pasta_temp}")
+                            
+                            # 1. Baixar gabarito
+                            query_gabarito = f"'{drive_folder_id}' in parents and name contains 'gabarito' and trashed = false"
+                            results_gabarito = drive_service.files().list(
+                                q=query_gabarito,
+                                fields="files(id, name, mimeType)",
+                                pageSize=1
+                            ).execute()
+                            
+                            gabarito_file = results_gabarito.get('files', [])
+                            if not gabarito_file:
+                                print("❌ Gabarito não encontrado!")
+                                continue
+                            
+                            gabarito_info = gabarito_file[0]
+                            print(f"📋 Baixando gabarito: {gabarito_info['name']}")
+                            request = drive_service.files().get_media(fileId=gabarito_info['id'])
+                            gabarito_path = os.path.join(pasta_temp, gabarito_info['name'])
+                            with open(gabarito_path, 'wb') as f:
+                                downloader = MediaIoBaseDownload(f, request)
+                                done = False
+                                while not done:
+                                    status, done = downloader.next_chunk()
+                            
+                            # Processar gabarito
+                            gabarito_img = preprocessar_arquivo(gabarito_path, "gabarito")
+                            if "page_" in gabarito_img:
+                                respostas_gabarito = detectar_respostas_pdf(gabarito_img, debug=False)
+                            else:
+                                respostas_gabarito = detectar_respostas(gabarito_img, debug=False)
+                            
+                            questoes_gabarito = sum(1 for r in respostas_gabarito if r != '?')
+                            print(f"✅ Gabarito: {questoes_gabarito}/52 questões")
+                            
+                            # 2. Processar cada cartão NOVO
+                            ids_processados_agora = []
+                            
+                            for i, cartao_info in enumerate(novos_cartoes, 1):
+                                try:
+                                    print(f"\n🔄 [{i}/{len(novos_cartoes)}] {cartao_info['name']}")
+                                    
+                                    # Baixar cartão
+                                    request = drive_service.files().get_media(fileId=cartao_info['id'])
+                                    cartao_path = os.path.join(pasta_temp, cartao_info['name'])
+                                    with open(cartao_path, 'wb') as f:
+                                        downloader = MediaIoBaseDownload(f, request)
+                                        done = False
+                                        while not done:
+                                            status, done = downloader.next_chunk()
+                                    
+                                    # Processar cartão
+                                    aluno_img = preprocessar_arquivo(cartao_path, f"aluno_{i}")
+                                    
+                                    # Extrair cabeçalho
+                                    if model_gemini:
+                                        dados_aluno = extrair_cabecalho_com_fallback(model_gemini, aluno_img)
+                                    else:
+                                        dados_aluno = extrair_cabecalho_com_ocr_fallback(aluno_img)
+                                    
+                                    if not dados_aluno or dados_aluno.get("aluno") == "N/A":
+                                        dados_aluno = {
+                                            "escola": "N/A",
+                                            "aluno": os.path.splitext(cartao_info['name'])[0],
+                                            "turma": "N/A",
+                                            "nascimento": "N/A"
+                                        }
+                                    
+                                    # Detectar respostas
+                                    if "page_" in aluno_img:
+                                        respostas_aluno = detectar_respostas_pdf(aluno_img, debug=False)
+                                    else:
+                                        respostas_aluno = detectar_respostas(aluno_img, debug=False)
+                                    
+                                    # Comparar com gabarito
+                                    resultado = comparar_respostas(respostas_gabarito, respostas_aluno)
+                                    print(f"   � {resultado['acertos']}/{resultado['total']} acertos ({resultado['percentual']:.1f}%)")
+                                    
+                                    # Enviar para Google Sheets
+                                    if client and PLANILHA_ID:
+                                        dados_envio = {
+                                            "Escola": dados_aluno.get("escola", "N/A"),
+                                            "Aluno": dados_aluno.get("aluno", "N/A"),
+                                            "Nascimento": dados_aluno.get("nascimento", "N/A"),
+                                            "Turma": dados_aluno.get("turma", "N/A")
+                                        }
+                                        enviar_para_planilha(client, dados_envio, resultado, PLANILHA_ID)
+                                    
+                                    # Marcar como processado
+                                    ids_processados_agora.append(cartao_info['id'])
+                                    
+                                except Exception as e:
+                                    print(f"   ❌ Erro: {e}")
+                            
+                            # 3. Mover arquivos processados no Drive
+                            if mover_processados and ids_processados_agora:
+                                print(f"\n📦 Movendo {len(ids_processados_agora)} cartões...")
+                                pasta_processados_id = encontrar_ou_criar_pasta_processados(drive_service, drive_folder_id)
+                                if pasta_processados_id:
+                                    for cartao_info in novos_cartoes:
+                                        if cartao_info['id'] in ids_processados_agora:
+                                            mover_arquivo_no_drive(
+                                                drive_service,
+                                                cartao_info['id'],
+                                                drive_folder_id,
+                                                pasta_processados_id,
+                                                cartao_info['name']
+                                            )
+                            
+                            # 4. Atualizar histórico com IDs processados
+                            arquivos_processados.update(ids_processados_agora)
+                            salvar_historico(arquivos_processados)
+                            
+                            # Limpar pasta temporária
+                            shutil.rmtree(pasta_temp, ignore_errors=True)
+                            
+                            print(f"\n✅ Processamento concluído!")
+                            print(f"📊 Novos processados: {len(ids_processados_agora)}")
+                            print(f"📝 Total no histórico: {len(arquivos_processados)}")
+                                
+                        except Exception as e:
+                            print(f"❌ Erro durante processamento: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            print("🔄 Continuando monitoramento...")
+                    else:
+                        print("� Nenhum cartão para processar")
+                    
+                    print(f"⏰ Próxima verificação em {args.intervalo} minutos...")
+                    time.sleep(args.intervalo * 60)
+                    
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    print(f"❌ Erro na verificação #{contador_verificacoes}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    print(f"🔄 Continuando... próxima verificação em {args.intervalo} minutos")
+                    time.sleep(args.intervalo * 60)
+                    
+        except KeyboardInterrupt:
+            print("\n\n🛑 Monitoramento interrompido pelo usuário")
+            print(f"� Total de verificações realizadas: {contador_verificacoes}")
+            print("👋 Até logo!")
+        
         exit(0)
 
         

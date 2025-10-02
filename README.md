@@ -234,13 +234,5 @@ echo $GEMINI_API_KEY
 
 **Jean Dias**
 
-## 🙏 Agradecimentos
-
-- Google Cloud Platform (Sheets API + Gemini AI)
-- OpenCV community
-- Tesseract OCR developers
-- Scikit-learn team
-
 ---
 
-**⚡ Desenvolvido para tornar a correção de provas mais rápida, precisa e automatizada!**

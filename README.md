@@ -114,20 +114,6 @@ Para baixar os cartões direto do Google Drive:
 - Copie o **ID da pasta** (ex.: `https://drive.google.com/drive/folders/ID_AQUI`)
 - defina a variável de ambiente `DRIVE_FOLDER_ID` dentro do arquivo .env
 
-### 4. Estrutura de pastas
-
-```
-cartao-resposta/
-├── gabaritos/              # Pasta com gabarito + cartões dos alunos
-│   ├── gabarito.png        # Gabarito (nome deve começar com "gabarito")
-│   ├── aluno1.png          # Cartões dos alunos
-│   ├── aluno2.jpg          # Aceita PNG, JPG, JPEG, PDF
-│   └── ...
-├── script.py               # Script principal
-├── credenciais_google.json # Suas credenciais (não incluído no git)
-└── ...
-```
-
 ## 🎮 Como Usar
 
 ### Modo Local (Recomendado)
@@ -157,35 +143,24 @@ um diretório temporário, processar os cartões e remover os arquivos no final.
 ### Exemplo de Saída
 
 ```
-✅ Gabarito identificado: gabarito.png
-👥 Encontrados 5 alunos para processar
+📄 Enviando para planilha de 52 questões...
+📊 Registro adicionado:
+   🏫 Escola: E. M. João Francisco Braz
+   👤 Aluno: Vitória Ferreira
+   📅 Nascimento: 10/08/2010
+   📚 Turma: 9° ano
+   📊 Resultado: 16 acertos | 36 erros | 30.8%
 
-🔄 [01/5] Processando: aluno1.png
-✅ Dados extraídos: JOÃO DA SILVA (Escola ABC)
-✅ Respostas processadas: 52/52 questões detectadas
-
-🔍 DEBUG - RESPOSTAS DETECTADAS PARA JOÃO DA SILVA:
-============================================================
-   Q01:A   Q02:C   Q03:A   Q04:C
-   Q05:C   Q06:B   Q07:D   Q08:A
-   [...]
-
-📊 ESTATÍSTICAS DE DETECÇÃO:
-   🅰️ Alternativa A: 14 questões
-   🅱️ Alternativa B: 11 questões  
-   🅲 Alternativa C: 20 questões
-   🅳 Alternativa D: 7 questões
-   ✅ Total detectado: 52/52 questões (100.0%)
-
-📊 Resultado: 42/52 acertos (80.8%)
-✅ Enviado para Google Sheets (1/5)
-
-🎉 PROCESSAMENTO CONCLUÍDO!
-📊 5 alunos processados com sucesso
+📋 GABARITO DAS QUESTÕES:
+==============================
+1-D  2-C  3-A  4-D  5-C  6-A  7-A  8-C  9-A  10-D
+11-A  12-A  13-B  14-D  15-B  16-D  17-A  18-A  19-A  20-D
+21-A  22-C  23-D  24-A  25-A  26-D  27-B  28-C  29-D  30-A
+31-B  32-B  33-B  34-C  35-C  36-B  37-A  38-D  39-C  40-D
+41-D  42-A  43-B  44-C  45-C  46-B  47-A  48-B  49-C  50-D
+51-C  52-D
+==============================
 ```
-
-## 🔧 Configurações Avançadas
-
 
 ### Customização no Código
 
@@ -195,9 +170,9 @@ um diretório temporário, processar os cartões e remover os arquivos no final.
 
 O sistema cria/atualiza uma planilha com as colunas:
 
-| Data/Hora | Escola | Aluno | Nascimento | Turma | Acertos | Erros | Percentual | Questões Detectadas |
-|-----------|--------|--------|------------|-------|---------|-------|------------|-------------------|
-| 25/09/2025 10:30 | Escola ABC | João Silva | 15/03/2005 | 3º A | 42 | 10 | 80.8% | 52 |
+| Data/Hora  | Escola | Aluno  | Nascimento | Turma | Acertos | Erros  | Percentual | 
+|------------|--------|--------|------------|-------|---------|------- |------------|
+| 25/09/2025 |   ABC  | João   | 15/03/2005 |  902  |    42   |    10  |   80.8%    |
 
 ## 🐛 Solução de Problemas
 
@@ -229,10 +204,4 @@ echo $GEMINI_API_KEY
 - Garantir boa iluminação e contraste
 - Evitar sombras ou reflexos
 - Usar modo debug para analisar detecções
-
-## 👨‍💻 Autor
-
-**Jean Dias**
-
----
 

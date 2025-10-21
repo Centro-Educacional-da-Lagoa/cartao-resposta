@@ -72,6 +72,50 @@ DRIVE_MIME_TO_EXT = {
 # SEÇÃO 0: PREPROCESSAMENTO DE ARQUIVOS (PDF/IMAGEM)
 # ===========================================
 
+def converter_para_preto_e_branco(image_path: str, threshold: int = 180, salvar: bool = True) -> str:
+    """
+    Converte uma imagem colorida para preto e branco puro (binarizado)
+    
+    Args:
+        image_path: Caminho da imagem original
+        threshold: Valor de threshold (0-255). Menor = mais preto, Maior = mais branco
+        salvar: Se deve salvar a imagem convertida
+        
+    Returns:
+        Caminho da imagem convertida em preto e branco
+    """
+    try:
+        # Carregar imagem
+        img = cv2.imread(image_path)
+        if img is None:
+            raise Exception(f"Não foi possível carregar a imagem: {image_path}")
+        
+        # Converter para escala de cinza
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Aplicar threshold para deixar preto e branco puro
+        # Pixels acima do threshold ficam brancos (255)
+        # Pixels abaixo do threshold ficam pretos (0)
+        _, img_pb = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
+        
+        # Salvar imagem se solicitado
+        if salvar:
+            # Criar nome do arquivo de saída
+            nome_base = os.path.splitext(image_path)[0]
+            extensao = os.path.splitext(image_path)[1]
+            output_path = f"{nome_base}_pb{extensao}"
+            
+            # Salvar
+            cv2.imwrite(output_path, img_pb)
+            
+            return output_path
+        else:
+            return image_path
+            
+    except Exception as e:
+        print(f"   ❌ Erro: {e}")
+        return image_path
+
 def preprocessar_arquivo(file_path: str, tipo: str = "aluno") -> str:
     """
     Preprocessa arquivo (PDF ou imagem) para garantir que temos uma imagem processável
@@ -158,10 +202,26 @@ def listar_arquivos_suportados(diretorio: str = ".") -> dict:
 # SEÇÃO 2: OMR - DETECÇÃO DE ALTERNATIVAS MARCADAS
 # ===========================================
 
+def salvar_debug_deteccao(image_path, bolhas_pintadas, crop):
+    """Salva imagem de debug com as bolhas detectadas marcadas"""
+    debug_img = crop.copy()
+    
+    for cx, cy, cnt, intensidade, area, circ, preenchimento in bolhas_pintadas:
+        # Marcar com círculo verde
+        cv2.circle(debug_img, (cx, cy), 8, (0, 255, 0), 2)
+        # Adicionar texto com intensidade
+        cv2.putText(debug_img, f"{intensidade:.0f}", (cx-15, cy-15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+    
+    # Salvar imagem de debug
+    filename = image_path.replace('.jpg', '').replace('.png', '')
+    debug_filename = f"debug_{os.path.basename(filename)}.png"
+    cv2.imwrite(debug_filename, debug_img)
+
 def detectar_respostas_pdf(image_path, debug=False):
     """
     Detecta as respostas marcadas no cartão resposta convertido de PDF.
     Otimizado para imagens de alta resolução com parâmetros específicos para PDFs.
+    VERSÃO UNIVERSAL: Detecta automaticamente se é 44 ou 52 questões.
     Retorna uma lista com as respostas ['A', 'B', 'C', 'D', '?'] onde '?' significa não detectado.
     """
     
@@ -179,7 +239,7 @@ def detectar_respostas_pdf(image_path, debug=False):
     
     # CROP ESPECÍFICO para alta resolução - área das questões
     # Para PDFs, usar proporções similares mas ajustadas
-    crop = image[int(height*0.55):int(height*0.98), int(width*0.02):int(width*0.98)]
+    crop = image[int(height*0.55):int(height*0.92), int(width*0.02):int(width*0.98)]
     
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     
@@ -195,14 +255,14 @@ def detectar_respostas_pdf(image_path, debug=False):
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
         
-        # Faixa de área adaptada para alta resolução
-        area_min = 600   # Área mínima para alta resolução
-        area_max = 6000  # Área máxima para alta resolução
-        circularity_min = 0.12  # Menos rigoroso para marcações irregulares
-        intensity_max = 60      # Intensidade máxima ajustada
+        # PARÂMETROS MENOS RIGOROSOS - Alta resolução
+        area_min = 300     # ↓ Reduzido (era 600)
+        area_max = 10000   # ↑ Aumentado (era 6000)
+        circularity_min = 0.06  # ↓ Muito flexível (era 0.12)
+        intensity_max = 90      # ↑ Aumentado (era 60)
         
     else:
-        # Parâmetros padrão para resolução normal
+        # PARÂMETROS MENOS RIGOROSOS - Resolução normal
         blur = cv2.GaussianBlur(gray, (3, 3), 0)
         _, thresh = cv2.threshold(blur, 30, 155, cv2.THRESH_BINARY_INV)
         
@@ -210,10 +270,10 @@ def detectar_respostas_pdf(image_path, debug=False):
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
         
-        area_min = 150
-        area_max = 800
-        circularity_min = 0.25
-        intensity_max = 35
+        area_min = 80      # ↓ Reduzido (era 100)
+        area_max = 1500    # ↑ Aumentado (era 800)
+        circularity_min = 0.10  # ↓ Muito flexível (era 0.25)
+        intensity_max = 60      # ↑ Aumentado (era 35)
     
     # Encontrar contornos
     contornos, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -256,36 +316,49 @@ def detectar_respostas_pdf(image_path, debug=False):
                                 pixels_escuros = cv2.countNonZero(cv2.bitwise_and(thresh, mask))
                                 percentual_preenchimento = pixels_escuros / area
                                 
-                                # Critérios de aceitação mais flexíveis para PDFs
+                                # CRITÉRIOS MENOS RIGOROSOS para PDFs - Aceita mais marcações
                                 aceita_marcacao = False
                                 
-                                # Marcação escura bem preenchida
-                                if intensidade_media < intensity_max and percentual_preenchimento > 0.25:
+                                # 1) Marcação escura com preenchimento mínimo
+                                if intensidade_media < intensity_max and percentual_preenchimento > 0.15:  # ↓ 15% (era 25%)
                                     aceita_marcacao = True
                                 
-                                # Marcação circular mesmo que pouco preenchida
-                                elif circularity > 0.3 and 0.1 <= percentual_preenchimento <= 0.9 and intensidade_media < intensity_max + 20:
+                                # 2) Marcação circular pouco preenchida
+                                elif circularity > 0.15 and 0.08 <= percentual_preenchimento <= 0.95 and intensidade_media < intensity_max + 30:  # Muito mais tolerante
                                     aceita_marcacao = True
                                 
-                                # Marcação grande com baixa intensidade (marca grossa)
-                                elif area > area_min * 2 and intensidade_media < intensity_max + 30 and percentual_preenchimento > 0.15:
+                                # 3) Marcação grande com baixa intensidade
+                                elif area > area_min * 2 and intensidade_media < intensity_max + 30 and percentual_preenchimento > 0.15:  # Bem flexível
                                     aceita_marcacao = True
                                 
                                 if aceita_marcacao:
                                     bolhas_pintadas.append((cx, cy, cnt, intensidade_media, area, circularity, percentual_preenchimento))
     
+    # DETECÇÃO AUTOMÁTICA: Decidir se é 44 ou 52 questões baseado no número de bolhas
+    num_bolhas = len(bolhas_pintadas)
+    
+    # Se detectar cerca de 44 bolhas (±20%), usar 44 questões
+    # Se detectar mais ou menos, usar 52 questões
+    if 35 <= num_bolhas <= 50:
+        num_questoes = 44
+        questoes_por_coluna = 11
+        print(f"📋 PDF: Detectado cartão com 44 questões ({num_bolhas} bolhas)")
+    else:
+        num_questoes = 52
+        questoes_por_coluna = 13
+        print(f"📋 PDF: Detectado cartão com 52 questões ({num_bolhas} bolhas)")
+    
     if debug:
         print(f"=== DEBUG PDF - ALTA RESOLUÇÃO ===")
         print(f"Área do crop: {crop.shape[1]}x{crop.shape[0]} pixels")
         print(f"Parâmetros usados - Área: {area_min}-{area_max}, Circ: {circularity_min:.2f}, Int: {intensity_max}")
-        for i, (cx, cy, _, intensidade, area, circ, preenchimento) in enumerate(bolhas_pintadas):
-            continue
+        print(f"Bolhas detectadas: {num_bolhas}, Questões estimadas: {num_questoes}")
 
     # Verificar se temos bolhas suficientes
     if len(bolhas_pintadas) < 6:  # Mínimo mais baixo para PDFs
         print(f"⚠️ Poucas bolhas detectadas em PDF ({len(bolhas_pintadas)}). Tentando processamento simplificado.")
         if len(bolhas_pintadas) < 2:
-            return ['?'] * 52
+            return ['?'] * num_questoes
     
     # Organização em colunas usando clustering adaptativo
     xs = np.array([b[0] for b in bolhas_pintadas], dtype=np.float32).reshape(-1, 1)
@@ -318,18 +391,18 @@ def detectar_respostas_pdf(image_path, debug=False):
             col.sort(key=lambda x: x[1])  # Ordenar por cy (coordenada Y)
         
         # Mapear questões para respostas usando distribuição equilibrada
-        respostas = ['?'] * 52
-        questoes_por_coluna = 52 // num_colunas
-        extra_questoes = 52 % num_colunas
+        respostas = ['?'] * num_questoes
+        questoes_por_coluna_calc = num_questoes // num_colunas
+        extra_questoes = num_questoes % num_colunas
         
         questao = 1
         
         for col_idx, coluna in enumerate(colunas):
             # Calcular quantas questões esta coluna deve ter
-            questoes_nesta_coluna = questoes_por_coluna + (1 if col_idx < extra_questoes else 0)
+            questoes_nesta_coluna = questoes_por_coluna_calc + (1 if col_idx < extra_questoes else 0)
             
             for linha_idx, (cx, cy, cnt, intensidade, area, circ, preenchimento) in enumerate(coluna):
-                if linha_idx < questoes_nesta_coluna and questao <= 52:
+                if linha_idx < questoes_nesta_coluna and questao <= num_questoes:
                     # Determinar a resposta baseada na posição X relativa
                     # Para PDFs, usar algoritmo mais sofisticado
                     
@@ -365,26 +438,39 @@ def detectar_respostas_pdf(image_path, debug=False):
         
     except Exception as e:
         print(f"Erro no clustering para PDF: {e}")
-        return ['?'] * 52
+        return ['?'] * num_questoes
 
 
-def detectar_respostas(image_path, debug=False):
+def detectar_respostas_52_questoes(image_path, debug=False, eh_gabarito=False):
     """
-    OMR: Detecta APENAS alternativas pintadas usando OpenCV
-    Versão aprimorada para lidar com PDFs convertidos
+    OMR: Detecta APENAS alternativas pintadas usando OpenCV para cartões com 52 questões
+    Layout: 4 colunas x 13 linhas = 52 questões
+    
+    Args:
+        image_path: Caminho da imagem
+        debug: Se deve mostrar informações de debug
+        eh_gabarito: Se True, usa crop otimizado para gabaritos (impressão limpa)
     """
     img_cv = cv2.imread(image_path)
     height, width = img_cv.shape[:2]
     
-    # Crop ESPECÍFICO para APENAS as 4 colunas de questões (área retangular completa)
-    # Expandido para capturar todas as 4 colunas de questões 1-52 + numeração
-    crop = img_cv[int(height*0.60):int(height*0.98), int(width*0.02):int(width*0.98)]
+    # CROPS ESPECÍFICOS PARA CARTÕES DE 52 QUESTÕES
+    if eh_gabarito:
+        # GABARITO: Crop mais centralizado (impressão limpa e consistente)
+        # Altura: 60% a 94% (mais restrito, gabaritos têm layout preciso)
+        # Largura: 4% a 96% (margens maiores, área bem definida)
+        crop = img_cv[int(height*0.60):int(height*0.98), int(width*0.02):int(width*0.98)]
+    else:
+        # ALUNOS: Crop mais amplo (marcações manuais podem variar)
+        # Altura: 58% a 96% (mais tolerante para capturar marcações em diferentes posições)
+        # Largura: 2% a 98% (margens mínimas para não perder marcações nas bordas)
+        crop = img_cv[int(height*0.58):int(height*0.96), int(width*0.02):int(width*0.98)]
     
     # Converter para escala de cinza
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     
     # Aplicar filtro suave
-    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    blur = cv2.GaussianBlur(gray, (9, 9), 0)
     
     # FOCO: Threshold MUITO restritivo para detectar APENAS marcações PRETAS
     _, thresh = cv2.threshold(blur, 30, 155, cv2.THRESH_BINARY_INV) 
@@ -394,6 +480,8 @@ def detectar_respostas(image_path, debug=False):
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
     
+    area_min = 150
+    intensity_max = 35
     # Encontrar contornos
     contornos, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
@@ -402,20 +490,18 @@ def detectar_respostas(image_path, debug=False):
     for cnt in contornos:
         area = cv2.contourArea(cnt)
         
-        # FOCO: Área mais específica para bolinhas das questões (não texto ou elementos gráficos)
-        if 150 < area < 800:  # Área mais ampla para capturar diferentes tamanhos de marcação
-            # Verificar se tem formato aproximadamente circular/oval (mais flexível)
+        # PARÂMETROS MENOS RIGOROSOS - Detecta mais bolhas
+        if 150 < area < 800: 
             perimeter = cv2.arcLength(cnt, True)
             if perimeter > 0:
                 circularity = 4 * np.pi * area / (perimeter * perimeter)
                 
-                # FOCO: Circularidade bem mais flexível para aceitar marcações irregulares
-                if circularity > 0.25:  # Muito menos rigoroso para aceitar contornos e formas irregulares
-                    # Verificar aspect ratio mais flexível
+
+                if circularity > 0.25: 
                     x, y, w, h = cv2.boundingRect(cnt)
                     aspect_ratio = float(w) / h
                     
-                    if 0.3 <= aspect_ratio <= 3.0:  # Aceita formas bem mais alongadas ou irregulares
+                    if 0.2 <= aspect_ratio <= 5.0:  # Aceita formas bem alongadas
                         # Calcular centro
                         M = cv2.moments(cnt)
                         if M["m00"] != 0:
@@ -435,21 +521,28 @@ def detectar_respostas(image_path, debug=False):
                                 pixels_escuros = cv2.countNonZero(cv2.bitwise_and(thresh, mask))
                                 percentual_preenchimento = pixels_escuros / area
                                 
-                                # FOCO: ACEITAR MARCAÇÕES VARIADAS (muito mais flexível)
-                                # Aceita marcações pretas, riscadas, contornadas, ou parcialmente preenchidas
-                                if intensidade_media < 35 and percentual_preenchimento > 0.5:
-                                    bolhas_pintadas.append((cx, cy, cnt, intensidade_media, area, circularity, percentual_preenchimento))
+                                # CRITÉRIOS MENOS RIGOROSOS - Aceita mais marcações
+                                aceita = False
                                 
-                                # DETECÇÃO ADICIONAL: Contornos circulares (como questões 20, 21, 26)
-                                # Para marcações que são apenas contornos com pouco preenchimento
-                                elif circularity > 0.4 and 0.2 <= percentual_preenchimento <= 0.8 and intensidade_media < 45:
+                                # CRITÉRIOS MENOS RIGOROSOS - Aceita mais marcações
+                                aceita = False
+                                
+                                # 1) Marcação escura com preenchimento mínimo
+                                if intensidade_media < 20 and percentual_preenchimento > 0.2:
+                                    aceita = True
+                                
+                                # 2) Contornos circulares pouco preenchidos
+                                elif circularity > 0.3 and 0.1 <= percentual_preenchimento <= 0.9 and intensidade_media < intensity_max + 20:
+                                    aceita = True
+                                
+                                # 3) Marcação grande/grossa
+                                elif area > area_min * 2 and intensidade_media < intensity_max + 30 and percentual_preenchimento > 0.15:
+                                    aceita = True
+                                
+                                if aceita:
                                     bolhas_pintadas.append((cx, cy, cnt, intensidade_media, area, circularity, percentual_preenchimento))
     
     if debug:
-        print(f"Bolhas pintadas detectadas: {len(bolhas_pintadas)}")
-        print(f"Área do crop: {crop.shape[1]}x{crop.shape[0]} pixels")
-        for i, (cx, cy, _, intensidade, area, circ, preenchimento) in enumerate(bolhas_pintadas):
-            continue
         salvar_debug_deteccao(image_path, bolhas_pintadas, crop)
     
     # Verificar se temos bolhas suficientes para processamento
@@ -570,41 +663,555 @@ def detectar_respostas(image_path, debug=False):
                 # Escolha a bolha mais "preta" da linha
                 bolha_marcada = min(linha_mais_proxima, key=lambda b: b[3] - (b[6] * 40))
 
-                # Descobrir a ALTERNATIVA pela posição X
+                # Descobrir a ALTERNATIVA pela posição X (SIMPLIFICADO E CORRIGIDO)
                 cx = bolha_marcada[0]
+                
+                # Mapear posição X para letra A, B, C ou D
                 if len(centros_opts) >= 4:
-                    idx_opt = np.argmin([abs(cx - centros_opts[j]) for j in range(len(centros_opts))])
-                    if idx_opt < len(ordem_opts):
-                        letra_idx = int(np.where(ordem_opts == idx_opt)[0][0])
-                        if letra_idx < len(letras):
-                            letra = letras[letra_idx]
-                        else:
-                            letra = '?'
+                    # Encontrar qual cluster (coluna de alternativa) esta bolha pertence
+                    distancias_x = [abs(cx - centros_opts[i]) for i in range(len(centros_opts))]
+                    idx_centro_mais_proximo = np.argmin(distancias_x)
+                    
+                    # ordem_opts contém os índices ordenados de esquerda→direita
+                    letra_idx = int(np.where(ordem_opts == idx_centro_mais_proximo)[0][0])
+                    
+                    if 0 <= letra_idx < len(letras):
+                        letra = letras[letra_idx]
                     else:
                         letra = '?'
                 else:
-                    # Processamento simplificado
-                    letra = letras[0] if len(letras) > 0 else '?'
+                    letra = '?'
 
                 respostas_finais[q] = letra
-                
-                if debug:
-                    intensidade = bolha_marcada[3]
-                    preenchimento = bolha_marcada[6]
-                    
-            
-            # Se não encontrou nenhuma linha, deixar como '?' (já é o padrão)
-            if respostas_finais[q] == '?' and debug:
-                print(f"Questão {q + 1}: ? (col {col_idx + 1}, linha {questao_idx + 1}, sem marcação detectada)")
-    
-    if debug:
-        questoes_detectadas = sum(1 for r in respostas_finais if r != '?')
-        print(f"Total de questões detectadas: {questoes_detectadas}")
-        print(f"Respostas: {respostas_finais}")
     
     return respostas_finais
 
-def salvar_debug_deteccao(image_path, bolhas_pintadas, crop):
+def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
+    """
+    OMR: Detecta APENAS alternativas pintadas usando OpenCV para cartões com 44 questões
+    Layout: 4 colunas x 11 linhas = 44 questões
+    
+    Args:
+        image_path: Caminho da imagem
+        debug: Se deve mostrar informações de debug
+        eh_gabarito: Se True, usa crop otimizado para gabaritos (impressão limpa)
+    """
+    img_cv = cv2.imread(image_path)
+    height, width = img_cv.shape[:2]
+    
+    # CROPS ESPECÍFICOS PARA CARTÕES DE 44 QUESTÕES
+    if eh_gabarito:
+        # GABARITO: Crop mais centralizado (impressão limpa e consistente)
+        crop = img_cv[int(height*0.60):int(height*0.92), int(width*0.02):int(width*0.98)]
+    else:
+        # ALUNOS: Crop mais amplo (marcações manuais podem variar)
+        crop = img_cv[int(height*0.58):int(height*0.89), int(width*0.02):int(width*0.98)]
+    
+    # Converter para escala de cinza
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    
+    # Aplicar filtro suave
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    
+    # FOCO: Threshold MUITO restritivo para detectar APENAS marcações PRETAS
+    _, thresh = cv2.threshold(blur, 30, 155, cv2.THRESH_BINARY_INV) 
+    
+    # Operações morfológicas para preencher bolhas
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+    
+    # Encontrar contornos
+    contornos, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    bolhas_pintadas = []
+    
+    for cnt in contornos:
+        area = cv2.contourArea(cnt)
+        
+        # PARÂMETROS MENOS RIGOROSOS - Detecta mais bolhas
+        if 150 < area < 800:
+            # Verificar se tem formato aproximadamente circular/oval (bem flexível)
+            perimeter = cv2.arcLength(cnt, True)
+            if perimeter > 0:
+                circularity = 4 * np.pi * area / (perimeter * perimeter)
+                
+                # CIRCULARIDADE BEM FLEXÍVEL - Aceita formas irregulares
+                if circularity > 0.25:
+                    # Verificar aspect ratio bem flexível
+                    x, y, w, h = cv2.boundingRect(cnt)
+                    aspect_ratio = float(w) / h
+                    
+                    if 0.2 <= aspect_ratio <= 5.0:
+                        # Calcular centro
+                        M = cv2.moments(cnt)
+                        if M["m00"] != 0:
+                            cx = int(M["m10"] / M["m00"])
+                            cy = int(M["m01"] / M["m00"])
+                            
+                            # Verificar se está na região das questões
+                            crop_height, crop_width = crop.shape[:2]
+                            if (20 < cx < crop_width - 20 and 20 < cy < crop_height - 20):
+                                
+                                # MELHORIA: Verificar densidade de pixels escuros na bolha
+                                mask = np.zeros(gray.shape, dtype=np.uint8)
+                                cv2.drawContours(mask, [cnt], -1, 255, -1)
+                                intensidade_media = cv2.mean(gray, mask=mask)[0]
+                                
+                                # Calcular percentual de pixels escuros na bolha
+                                pixels_escuros = cv2.countNonZero(cv2.bitwise_and(thresh, mask))
+                                percentual_preenchimento = pixels_escuros / area
+                                
+                                # CRITÉRIOS MENOS RIGOROSOS - Aceita mais marcações
+                                aceita = False
+                                
+                                # 1) Marcação escura com preenchimento mínimo
+                                if intensidade_media < 35 and percentual_preenchimento > 0.5:
+                                    aceita = True
+                                
+                                # 2) Contornos circulares pouco preenchidos
+                                elif circularity > 0.4 and 0.2 <= percentual_preenchimento <= 0.8 and intensidade_media < 45:
+                                    aceita = True
+                                
+                                # 3) Marcação grande/grossa
+                                elif area > 120 and intensidade_media < 90 and percentual_preenchimento > 0.10:
+                                    aceita = True
+                                
+                                if aceita:
+                                    bolhas_pintadas.append((cx, cy, cnt, intensidade_media, area, circularity, percentual_preenchimento))
+    
+    if debug:
+        salvar_debug_deteccao(image_path, bolhas_pintadas, crop)
+    
+    # Verificar se temos bolhas suficientes para processamento
+    if len(bolhas_pintadas) < 4:
+        print(f"⚠️ Poucas bolhas detectadas ({len(bolhas_pintadas)}). Retornando lista vazia.")
+        return ['?'] * 44
+    
+    # MELHORIA: Organização mais precisa usando KMeans para detectar as 4 colunas
+    xs = np.array([b[0] for b in bolhas_pintadas], dtype=np.float32).reshape(-1, 1)
+    num_colunas = min(4, max(1, len(bolhas_pintadas) // 3))
+    
+    if num_colunas < 4:
+        print(f"⚠️ Detectadas apenas {num_colunas} colunas possíveis. Processamento simplificado.")
+    
+    k_cols = KMeans(n_clusters=num_colunas, n_init=10, random_state=0).fit(xs)
+    col_idx_por_bolha = k_cols.predict(xs)
+    centros_cols = sorted(k_cols.cluster_centers_.flatten())
+
+    ordem_cols = np.argsort(k_cols.cluster_centers_.flatten())
+    remap = {int(c): i for i, c in enumerate(ordem_cols)}
+
+    bolhas_por_coluna = [[] for _ in range(num_colunas)]
+    for bolha, c_orig in zip(bolhas_pintadas, col_idx_por_bolha):
+        if remap[int(c_orig)] < num_colunas:
+            bolhas_por_coluna[remap[int(c_orig)]].append(bolha)
+
+    # Para CADA coluna, processar as questões
+    letras = ['A', 'B', 'C', 'D']
+    respostas_finais = ['?'] * 44
+
+    for col_idx, bolhas_coluna in enumerate(bolhas_por_coluna):
+        if not bolhas_coluna:
+            continue
+
+        # Se há bolhas suficientes na coluna, tentar detectar alternativas A-D
+        if len(bolhas_coluna) >= 4:
+            xs_col = np.array([b[0] for b in bolhas_coluna], dtype=np.float32).reshape(-1, 1)
+            num_alternativas = min(4, len(bolhas_coluna))
+            k_opts = KMeans(n_clusters=num_alternativas, n_init=10, random_state=0).fit(xs_col)
+            centros_opts = k_opts.cluster_centers_.flatten()
+            ordem_opts = np.argsort(centros_opts)
+        else:
+            ordem_opts = list(range(len(bolhas_coluna)))
+            centros_opts = [b[0] for b in bolhas_coluna]
+
+        # Agrupe por LINHAS
+        ys = sorted([b[1] for b in bolhas_coluna])
+        dy = np.median(np.diff(ys)) if len(ys) > 5 else 25
+        tolerance_y = max(18, int(dy * 0.7))
+
+        linhas = []
+        for bolha in sorted(bolhas_coluna, key=lambda b: b[1]):
+            cy = bolha[1]
+            if not linhas or abs(cy - linhas[-1][0][1]) > tolerance_y:
+                linhas.append([bolha])
+            else:
+                linhas[-1].append(bolha)
+
+        linhas.sort(key=lambda linha: linha[0][1])
+        linhas_usadas = set()
+
+        # Cada coluna tem 11 questões - MAPEAMENTO CORRETO PARA 44 QUESTÕES
+        offset_questao = col_idx * 11
+        
+        if linhas:
+            y_min = min(linha[0][1] for linha in linhas)
+            y_max = max(linha[0][1] for linha in linhas)
+            altura_total = y_max - y_min
+            espacamento_questao = altura_total / 10 if len(linhas) > 1 else 25  # 10 intervalos para 11 questões
+        else:
+            continue
+            
+        # Para cada questão (0-10) na coluna
+        num_questoes = min(11, 44 - offset_questao)
+        
+        for questao_idx in range(num_questoes):
+            q = offset_questao + questao_idx
+            if q >= 44:
+                break
+                
+            y_esperado = y_min + (questao_idx * espacamento_questao)
+            
+            linha_mais_proxima = None
+            linha_mais_proxima_idx = -1
+            menor_distancia = float('inf')
+            
+            for idx, linha in enumerate(linhas):
+                if idx in linhas_usadas:
+                    continue
+                    
+                y_linha = linha[0][1]
+                distancia = abs(y_linha - y_esperado)
+                
+                if distancia < espacamento_questao * 1.5 and distancia < menor_distancia:
+                    menor_distancia = distancia
+                    linha_mais_proxima = linha
+                    linha_mais_proxima_idx = idx
+            
+            if linha_mais_proxima is not None:
+                linhas_usadas.add(linha_mais_proxima_idx)
+                
+                # Escolha a bolha mais "preta" da linha
+                bolha_marcada = min(linha_mais_proxima, key=lambda b: b[3] - (b[6] * 40))
+
+                cx = bolha_marcada[0]
+                
+                # Mapear posição X para letra A, B, C ou D
+                if len(centros_opts) >= 4:
+                    distancias_x = [abs(cx - centros_opts[i]) for i in range(len(centros_opts))]
+                    idx_centro_mais_proximo = np.argmin(distancias_x)
+                    letra_idx = int(np.where(ordem_opts == idx_centro_mais_proximo)[0][0])
+                    
+                    if 0 <= letra_idx < len(letras):
+                        letra = letras[letra_idx]
+                    else:
+                        letra = '?'
+                else:
+                    letra = '?'
+
+                respostas_finais[q] = letra
+    
+    return respostas_finais
+    """
+    OMR: Detecta APENAS alternativas pintadas usando OpenCV para cartões com 44 questões
+    Versão aprimorada para lidar com PDFs convertidos
+    Layout: 4 colunas x 11 linhas = 44 questões
+    
+    Args:
+        image_path: Caminho da imagem
+        debug: Se deve mostrar informações de debug
+        eh_gabarito: Se True, usa crop otimizado para gabaritos (impressão limpa)
+    """
+    img_cv = cv2.imread(image_path)
+    height, width = img_cv.shape[:2]
+    
+    # CROPS ESPECÍFICOS PARA CARTÕES DE 44 QUESTÕES
+    if eh_gabarito:
+        # GABARITO: Crop mais centralizado (impressão limpa e consistente)
+        # Altura: 64% a 91% (mais restrito, gabaritos têm layout preciso)
+        # Largura: 4% a 96% (margens maiores, área bem definida)
+        crop = img_cv[int(height*0.62):int(height*0.92), int(width*0.02):int(width*0.98)]
+    else:
+        # ALUNOS: Crop mais amplo (marcações manuais podem variar)
+        # Altura: 62% a 93% (mais tolerante para capturar marcações em diferentes posições)
+        # Largura: 2% a 98% (margens mínimas para não perder marcações nas bordas)
+        crop = img_cv[int(height*0.60):int(height*0.89), int(width*0.02):int(width*0.98)]
+    
+    # Converter para escala de cinza
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    
+    # Aplicar filtro suave
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    
+    # FOCO: Threshold MUITO restritivo para detectar APENAS marcações PRETAS
+    _, thresh = cv2.threshold(blur, 30, 155, cv2.THRESH_BINARY_INV) 
+    
+    # Operações morfológicas para preencher bolhas
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+    
+    # Encontrar contornos
+    contornos, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    bolhas_pintadas = []
+    
+    for cnt in contornos:
+        area = cv2.contourArea(cnt)
+        
+        # PARÂMETROS MENOS RIGOROSOS - Detecta mais bolhas
+        if 80 < area < 1500:  # ↓ Mínimo 80 (era 150), ↑ Máximo 1500 (era 800)
+            # Verificar se tem formato aproximadamente circular/oval (bem flexível)
+            perimeter = cv2.arcLength(cnt, True)
+            if perimeter > 0:
+                circularity = 4 * np.pi * area / (perimeter * perimeter)
+                
+                # CIRCULARIDADE BEM FLEXÍVEL - Aceita formas irregulares
+                if circularity > 0.10:  # ↓ 0.10 (era 0.25) - MUITO MAIS FLEXÍVEL
+                    # Verificar aspect ratio bem flexível
+                    x, y, w, h = cv2.boundingRect(cnt)
+                    aspect_ratio = float(w) / h
+                    
+                    if 0.2 <= aspect_ratio <= 5.0:  # Aceita formas bem alongadas
+                        # Calcular centro
+                        M = cv2.moments(cnt)
+                        if M["m00"] != 0:
+                            cx = int(M["m10"] / M["m00"])
+                            cy = int(M["m01"] / M["m00"])
+                            
+                            # Verificar se está na região das questões
+                            crop_height, crop_width = crop.shape[:2]
+                            if (20 < cx < crop_width - 20 and 20 < cy < crop_height - 20):
+                                
+                                # MELHORIA: Verificar densidade de pixels escuros na bolha
+                                mask = np.zeros(gray.shape, dtype=np.uint8)
+                                cv2.drawContours(mask, [cnt], -1, 255, -1)
+                                intensidade_media = cv2.mean(gray, mask=mask)[0]
+                                
+                                # Calcular percentual de pixels escuros na bolha
+                                pixels_escuros = cv2.countNonZero(cv2.bitwise_and(thresh, mask))
+                                percentual_preenchimento = pixels_escuros / area
+                                
+                                # CRITÉRIOS MENOS RIGOROSOS - Aceita mais marcações
+                                aceita = False
+                                
+                                # 1) Marcação escura com preenchimento mínimo
+                                if intensidade_media < 60 and percentual_preenchimento > 0.20:  # ↑ intensidade 60 (era 35), ↓ preench 20% (era 50%)
+                                    aceita = True
+                                
+                                # 2) Contornos circulares pouco preenchidos
+                                elif circularity > 0.15 and 0.10 <= percentual_preenchimento <= 0.90 and intensidade_media < 80:  # Muito mais tolerante
+                                    aceita = True
+                                
+                                # 3) Marcação grande/grossa
+                                elif area > 120 and intensidade_media < 90 and percentual_preenchimento > 0.10:  # Bem flexível
+                                    aceita = True
+                                
+                                if aceita:
+                                    bolhas_pintadas.append((cx, cy, cnt, intensidade_media, area, circularity, percentual_preenchimento))
+    
+    if debug:
+        salvar_debug_deteccao(image_path, bolhas_pintadas, crop)
+    
+    # Verificar se temos bolhas suficientes para processamento
+    if len(bolhas_pintadas) < 4:
+        print(f"⚠️ Poucas bolhas detectadas ({len(bolhas_pintadas)}). Retornando lista vazia.")
+        return ['?'] * 44
+    
+    # MELHORIA: Organização mais precisa usando KMeans para detectar as 4 colunas
+    
+    # 1) Após montar bolhas_pintadas, separe só os 'cx' (centros X)
+    xs = np.array([b[0] for b in bolhas_pintadas], dtype=np.float32).reshape(-1, 1)
+
+    # 2) Determinar número de colunas baseado no número de bolhas
+    num_colunas = min(4, max(1, len(bolhas_pintadas) // 3))  # Pelo menos 3 bolhas por coluna
+    
+    if num_colunas < 4:
+        print(f"⚠️ Detectadas apenas {num_colunas} colunas possíveis. Processamento simplificado.")
+    
+    # 3) Descubra as BANDAS VERTICAIS (colunas de questões) via KMeans
+    k_cols = KMeans(n_clusters=num_colunas, n_init=10, random_state=0).fit(xs)
+    col_idx_por_bolha = k_cols.predict(xs)
+    centros_cols = sorted(k_cols.cluster_centers_.flatten())  # esquerda→direita
+
+    # Mapeie cada bolha para a coluna correta usando a ordem dos centros
+    # (reindexar para 0..num_colunas-1 na ordem esquerda→direita)
+    ordem_cols = np.argsort(k_cols.cluster_centers_.flatten())
+    remap = {int(c): i for i, c in enumerate(ordem_cols)}
+
+    bolhas_por_coluna = [[] for _ in range(num_colunas)]
+    for bolha, c_orig in zip(bolhas_pintadas, col_idx_por_bolha):
+        if remap[int(c_orig)] < num_colunas:
+            bolhas_por_coluna[remap[int(c_orig)]].append(bolha)
+
+    # 4) Para CADA coluna, processar as questões
+    letras = ['A', 'B', 'C', 'D']
+    respostas_finais = ['?'] * 44
+
+    for col_idx, bolhas_coluna in enumerate(bolhas_por_coluna):
+        if not bolhas_coluna:
+            continue
+
+        # Se há bolhas suficientes na coluna, tentar detectar alternativas A-D
+        if len(bolhas_coluna) >= 4:
+            xs_col = np.array([b[0] for b in bolhas_coluna], dtype=np.float32).reshape(-1, 1)
+            num_alternativas = min(4, len(bolhas_coluna))
+            k_opts = KMeans(n_clusters=num_alternativas, n_init=10, random_state=0).fit(xs_col)
+            centros_opts = k_opts.cluster_centers_.flatten()
+            ordem_opts = np.argsort(centros_opts)  # esquerda→direita ⇒ A,B,C,D
+        else:
+            # Processamento simplificado se há poucas bolhas
+            ordem_opts = list(range(len(bolhas_coluna)))
+            centros_opts = [b[0] for b in bolhas_coluna]
+
+        # Agrupe por LINHAS usando tolerância mais flexível
+        ys = sorted([b[1] for b in bolhas_coluna])
+        dy = np.median(np.diff(ys)) if len(ys) > 5 else 25  # Espaçamento base maior
+        tolerance_y = max(18, int(dy * 0.7))  # 70% do espaçamento (mais tolerante)
+
+        linhas = []
+        for bolha in sorted(bolhas_coluna, key=lambda b: b[1]):  # por Y
+            cy = bolha[1]
+            if not linhas or abs(cy - linhas[-1][0][1]) > tolerance_y:
+                linhas.append([bolha])
+            else:
+                linhas[-1].append(bolha)
+
+        # Ordene as linhas por Y
+        linhas.sort(key=lambda linha: linha[0][1])
+        
+        # Rastrear linhas usadas com conjunto de índices
+        linhas_usadas = set()
+
+        # Cada coluna tem 11 questões para 44 questões - MAPEAMENTO CORRETO
+        offset_questao = col_idx * 11
+        
+        # Calcular as posições Y esperadas das 11 questões na coluna
+        if linhas:
+            y_min = min(linha[0][1] for linha in linhas)
+            y_max = max(linha[0][1] for linha in linhas)
+            altura_total = y_max - y_min
+            espacamento_questao = altura_total / 10 if len(linhas) > 1 else 25  # 10 intervalos para 11 questões
+        else:
+            continue
+            
+        # Para cada questão (0-10) na coluna
+        num_questoes = min(11, 44 - offset_questao)  # Não exceder 44 questões total
+        
+        for questao_idx in range(num_questoes):
+            q = offset_questao + questao_idx
+            if q >= 44:
+                break
+                
+            # Calcular posição Y esperada desta questão
+            y_esperado = y_min + (questao_idx * espacamento_questao)
+            
+            # Encontrar a linha mais próxima desta posição Y
+            linha_mais_proxima = None
+            linha_mais_proxima_idx = -1
+            menor_distancia = float('inf')
+            
+            for idx, linha in enumerate(linhas):
+                if idx in linhas_usadas:  # Pular linhas já usadas
+                    continue
+                    
+                y_linha = linha[0][1]  # Y da primeira bolha da linha
+                distancia = abs(y_linha - y_esperado)
+                
+                # Tolerância: aceitar linha se estiver dentro de uma janela mais ampla
+                if distancia < espacamento_questao * 1.5 and distancia < menor_distancia:
+                    menor_distancia = distancia
+                    linha_mais_proxima = linha
+                    linha_mais_proxima_idx = idx
+            
+            if linha_mais_proxima is not None:
+                # Marcar linha como usada
+                linhas_usadas.add(linha_mais_proxima_idx)
+                
+                # 🔧 VALIDAÇÃO: Verificar se a linha tem pelo menos 4 bolhas (A, B, C, D)
+                if len(linha_mais_proxima) < 4:
+                    if debug:
+                        print(f"⚠️ Q{q+1}: Linha tem apenas {len(linha_mais_proxima)} bolhas (esperado: 4)")
+                    # Tentar processar mesmo assim, mas marcar como suspeito
+                
+                # Ordenar as bolhas da linha por posição X (esquerda → direita = A, B, C, D)
+                linha_ordenada_x = sorted(linha_mais_proxima, key=lambda b: b[0])
+                
+                # 🔧 CORREÇÃO CRÍTICA: Escolher a bolha MAIS ESCURA (menor intensidade)
+                # Ignorar percentual de preenchimento por enquanto, focar na intensidade
+                bolha_marcada = min(linha_ordenada_x, key=lambda b: b[3])  # b[3] = intensidade média
+                
+                # Encontrar o índice (posição) da bolha marcada na lista ordenada
+                letra = '?'
+                cx_bolha = bolha_marcada[0]
+                cy_bolha = bolha_marcada[1]
+                
+                for idx_x, bolha in enumerate(linha_ordenada_x):
+                    # Verificar se é a mesma bolha (comparar posição X e Y)
+                    if abs(bolha[0] - cx_bolha) < 5 and abs(bolha[1] - cy_bolha) < 5:
+                        if 0 <= idx_x < len(letras):
+                            letra = letras[idx_x]
+                        break
+
+                respostas_finais[q] = letra
+    
+    return respostas_finais
+
+
+
+def detectar_respostas_universal(image_path, debug=False):
+    """
+    Função universal que detecta automaticamente se o cartão tem 44 ou 52 questões
+    e chama a função apropriada.
+    
+    Args:
+        image_path: Caminho da imagem do cartão resposta
+        debug: Se deve exibir informações de debug
+        
+    Returns:
+        Lista com as respostas detectadas (tamanho 44 ou 52 dependendo do cartão)
+    """
+    # Primeiro, detectar bolhas para estimar quantidade de questões
+    img_cv = cv2.imread(image_path)
+    if img_cv is None:
+        print(f"❌ Erro ao carregar imagem: {image_path}")
+        return ['?'] * 52  # Retorna 52 por padrão em caso de erro
+    
+    height, width = img_cv.shape[:2]
+    crop = img_cv[int(height*0.60):int(height*0.94), int(width*0.02):int(width*0.98)]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, thresh = cv2.threshold(blur, 30, 155, cv2.THRESH_BINARY_INV)
+    
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+    
+    contornos, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Contar bolhas válidas - PARÂMETROS MENOS RIGOROSOS
+    num_bolhas = 0
+    for cnt in contornos:
+        area = cv2.contourArea(cnt)
+        if 80 < area < 1500:  # ↓ Mínimo 80 (era 150), ↑ Máximo 1500 (era 800)
+            perimeter = cv2.arcLength(cnt, True)
+            if perimeter > 0:
+                circularity = 4 * np.pi * area / (perimeter * perimeter)
+                if circularity > 0.10:  # ↓ 0.10 (era 0.25) - MUITO MAIS FLEXÍVEL
+                    num_bolhas += 1
+    
+    # Decidir qual função usar baseado no número de bolhas detectadas
+    # Se detectar cerca de 44 bolhas (±20%), usar função de 44 questões
+    # Se detectar cerca de 52 bolhas (±20%), usar função de 52 questões
+    
+    if debug:
+        print(f"🔍 Detecção Universal: {num_bolhas} bolhas encontradas")
+    
+    # Thresholds para decidir o tipo de cartão
+    # Se tem entre 35-50 bolhas, provavelmente é cartão de 44 questões
+    # Se tem mais de 50 bolhas ou menos de 35, provavelmente é cartão de 52 questões
+    
+    if 35 <= num_bolhas <= 50:
+        if debug:
+            print("📋 Detectado cartão com 44 questões")
+        return detectar_respostas_44_questoes(image_path, debug)
+    else:
+        if debug:
+            print("📋 Detectado cartão com 52 questões")
+        return detectar_respostas_52_questoes(image_path, debug)
+
+
     """Salva imagem de debug com as bolhas detectadas marcadas"""
     debug_img = crop.copy()
     
@@ -618,6 +1225,24 @@ def salvar_debug_deteccao(image_path, bolhas_pintadas, crop):
     filename = image_path.replace('.jpg', '').replace('.png', '')
     debug_filename = f"debug_{os.path.basename(filename)}.png"
     cv2.imwrite(debug_filename, debug_img)
+
+def detectar_respostas_por_tipo(image_path, num_questoes=52, debug=False, eh_gabarito=False):
+    """
+    Função auxiliar que escolhe a detecção correta baseada no número de questões.
+    
+    Args:
+        image_path: Caminho da imagem do cartão
+        num_questoes: Número de questões (44 ou 52)
+        debug: Se deve exibir informações de debug
+        eh_gabarito: Se True, usa crop específico para gabaritos
+        
+    Returns:
+        Lista com as respostas detectadas
+    """
+    if num_questoes == 44:
+        return detectar_respostas_44_questoes(image_path, debug=debug, eh_gabarito=eh_gabarito)
+    else:
+        return detectar_respostas_52_questoes(image_path, debug=debug, eh_gabarito=eh_gabarito)
 
 # ===========================================
 # SEÇÃO 3: GEMINI - ANÁLISE INTELIGENTE DE IMAGENS
@@ -707,8 +1332,6 @@ def extrair_cabecalho_com_gemini(model, image_path):
         response = model.generate_content([prompt, image])
         resposta_texto = response.text.strip()
         
-        print(f"🤖 GEMINI CABEÇALHO - Resposta bruta: {resposta_texto}")
-        
         # Tentar extrair JSON da resposta
         try:
             import json
@@ -722,11 +1345,6 @@ def extrair_cabecalho_com_gemini(model, image_path):
                 
                 # Validar estrutura
                 if all(key in dados for key in ['escola', 'aluno', 'turma', 'nascimento']):
-                    print(f"✅ GEMINI extraiu dados do cabeçalho:")
-                    print(f"   🏫 Escola: {dados['escola']}")
-                    print(f"   👤 Aluno: {dados['aluno']}")
-                    print(f"   📚 Turma: {dados['turma']}")
-                    print(f"   📅 Nascimento: {dados['nascimento']}")
                     return dados
                 else:
                     print("❌ JSON não tem todas as chaves necessárias")
@@ -748,8 +1366,6 @@ def extrair_cabecalho_com_ocr_fallback(image_path):
     Função de fallback usando OCR tradicional quando Gemini falha
     """
     try:
-        print("🔄 Usando OCR como fallback...")
-        
         # Carregar imagem
         img = cv2.imread(image_path)
         if img is None:
@@ -827,12 +1443,9 @@ def extrair_cabecalho_com_fallback(model, image_path):
         try:
             dados_gemini = extrair_cabecalho_com_gemini(model, image_path)
             if dados_gemini:
-                print("✅ Gemini extraiu dados com sucesso")
                 return dados_gemini
-            else:
-                print("⚠️ Gemini falhou, tentando OCR...")
         except Exception as e:
-            print(f"⚠️ Gemini com erro ({str(e)[:50]}...), usando OCR")
+            pass  # Silenciar erro do Gemini, usar OCR como fallback
     
     # Fallback para OCR
     dados_ocr = extrair_cabecalho_com_ocr_fallback(image_path)
@@ -992,40 +1605,39 @@ def obter_metadados_pasta_drive(service, pasta_id: str) -> dict:
         print(f"❌ Erro ao obter metadados: {e}")
         return {}
 
-def mover_arquivos_processados_drive(service, pasta_origem_id: str, metadados: dict):
-    """Move arquivos processados (exceto gabarito) para pasta 'cartoes-processados'."""
+def mover_arquivos_processados_drive(service, pasta_origem_id: str, metadados: dict, pasta_destino_id: str):
+    """Move arquivos processados (exceto gabarito) da pasta de upload para a pasta de destino."""
     try:
         # Configurar serviço com permissões completas
         service_completo = configurar_google_drive_service_completo()
         if not service_completo:
             print("❌ Não foi possível obter permissões para mover arquivos")
             return
-        
-        # Encontrar ou criar pasta de processados
-        pasta_processados_id = encontrar_ou_criar_pasta_processados(service_completo, pasta_origem_id)
-        if not pasta_processados_id:
-            print("❌ Não foi possível criar pasta 'cartoes-processados'")
-            return
-        
+
         arquivos_movidos = 0
         
         # Mover todos os arquivos exceto o gabarito
         for nome_arquivo, dados in metadados.items():
             # Pular arquivo de gabarito
             if nome_arquivo.lower().startswith('gabarito'):
+                print(f"⏭️ Gabarito ignorado: {nome_arquivo}")
                 continue
             
             # Mover arquivo
+            print(f"📦 Movendo: {nome_arquivo}...")
             if mover_arquivo_no_drive(
                 service_completo, 
                 dados['id'], 
                 pasta_origem_id, 
-                pasta_processados_id, 
+                pasta_destino_id, 
                 nome_arquivo
             ):
                 arquivos_movidos += 1
+                print(f"   ✅ Movido com sucesso!")
+            else:
+                print(f"   ❌ Falha ao mover")
         
-        print(f"✅ {arquivos_movidos} arquivos movidos para 'cartoes-processados' no Drive")
+        print(f"\n✅ Total: {arquivos_movidos} arquivos movidos para a pasta de destino no Drive")
         
     except Exception as e:
         print(f"❌ Erro ao mover arquivos processados: {e}")
@@ -1041,8 +1653,21 @@ def sanitizar_nome_arquivo(nome: str, extensao_padrao: str = "") -> str:
     return nome_limpo
 
 
-def baixar_cartoes_da_pasta_drive(service, pasta_id: str, destino: str, formatos_validos: Optional[Dict[str, str]] = None) -> List[str]:
-    """Baixa todos os cartões (gabarito + alunos) de uma pasta do Google Drive."""
+def baixar_cartoes_da_pasta_drive(service, pasta_id: str, destino: str, formatos_validos: Optional[Dict[str, str]] = None, converter_pb: bool = True, threshold_pb: int = 180) -> List[str]:
+    """
+    Baixa todos os cartões (gabarito + alunos) de uma pasta do Google Drive.
+    
+    Args:
+        service: Serviço do Google Drive
+        pasta_id: ID da pasta no Drive
+        destino: Diretório de destino
+        formatos_validos: Dicionário de MIME types válidos
+        converter_pb: Se deve converter imagens para preto e branco (padrão: True)
+        threshold_pb: Threshold para conversão P&B (padrão: 180)
+        
+    Returns:
+        Lista de caminhos dos arquivos baixados (convertidos se converter_pb=True)
+    """
     if not service:
         print("❌ Serviço do Google Drive não configurado.")
         return []
@@ -1112,7 +1737,32 @@ def baixar_cartoes_da_pasta_drive(service, pasta_id: str, destino: str, formatos
                 with open(caminho_destino, 'wb') as destino_arquivo:
                     destino_arquivo.write(fh.getbuffer())
 
+                # CONVERSÃO AUTOMÁTICA PARA PRETO E BRANCO
+                # ⚠️ NÃO CONVERTER PDFs - eles serão processados separadamente
+                eh_pdf = caminho_destino.lower().endswith('.pdf')
+                eh_gabarito = nome_original.lower().startswith('gabarito')
+                
+                if converter_pb and not eh_gabarito and not eh_pdf:
+                    print(f"   🎨 Convertendo para P&B (threshold={threshold_pb})...")
+                    try:
+                        caminho_pb = converter_para_preto_e_branco(
+                            caminho_destino, 
+                            threshold=threshold_pb, 
+                            salvar=True
+                        )
+                        # Usar imagem convertida ao invés da original
+                        if caminho_pb and os.path.exists(caminho_pb):
+                            # Remover original e renomear convertida
+                            os.remove(caminho_destino)
+                            os.rename(caminho_pb, caminho_destino)
+                            print(f"   ✅ Convertido para P&B")
+                    except Exception as e:
+                        print(f"   ⚠️ Erro na conversão P&B: {e} - usando original")
+                elif eh_pdf:
+                    print(f"   📄 PDF detectado - será processado separadamente")
+                
                 arquivos_baixados.append(caminho_destino)
+                print(f"   📝 Arquivo adicionado à lista: {os.path.basename(caminho_destino)} (extensão: {os.path.splitext(caminho_destino)[1]})")
 
             page_token = response.get('nextPageToken')
             if not page_token:
@@ -1131,14 +1781,33 @@ def baixar_cartoes_da_pasta_drive(service, pasta_id: str, destino: str, formatos
 
 def baixar_e_processar_pasta_drive(
     pasta_id: str,
+    pasta_destino_id: str = None,
     usar_gemini: bool = True,
     debug_mode: bool = False,
     enviar_para_sheets: bool = True,
     manter_pasta_temporaria: bool = False,
     mover_processados: bool = True,
-    apenas_gabarito: bool = False
+    apenas_gabarito: bool = False,
+    converter_pb: bool = True,
+    threshold_pb: int = 180,
+    num_questoes: int = 52
 ):
-    """Workflow completo: baixa do Drive, processa cartões e envia resultados."""
+    """
+    Workflow completo: baixa do Drive, converte para P&B, processa cartões e envia resultados.
+    
+    Args:
+        pasta_id: ID da pasta no Google Drive (origem/upload)
+        pasta_destino_id: ID da pasta de destino (5º ou 9º ano)
+        usar_gemini: Se deve usar Gemini para extração de dados
+        debug_mode: Se deve exibir informações de debug
+        enviar_para_sheets: Se deve enviar resultados para Google Sheets
+        manter_pasta_temporaria: Se deve manter arquivos temporários
+        mover_processados: Se deve mover arquivos processados no Drive
+        apenas_gabarito: Se deve processar apenas o gabarito
+        converter_pb: Se deve converter imagens para preto e branco (padrão: True)
+        threshold_pb: Threshold para conversão P&B, 0-255 (padrão: 180)
+        num_questoes: Tipo de cartão (44 ou 52 questões)
+    """
 
     service = configurar_google_drive_service()
     if not service:
@@ -1147,39 +1816,154 @@ def baixar_e_processar_pasta_drive(
 
     pasta_temporaria = tempfile.mkdtemp(prefix="cartoes_drive_")
     print(f"📁 Pasta temporária criada: {pasta_temporaria}")
+    
+    if converter_pb:
+        print(f"🎨 Conversão P&B habilitada (threshold={threshold_pb})")
+        print(f"   ℹ️ Gabaritos serão mantidos originais")
+        print(f"   ℹ️ Cartões de alunos serão convertidos automaticamente")
 
     try:
         # Obter metadados dos arquivos durante o download
         arquivos_metadata = obter_metadados_pasta_drive(service, pasta_id)
-        arquivos_baixados = baixar_cartoes_da_pasta_drive(service, pasta_id, pasta_temporaria)
+        
+        # Baixar e converter automaticamente para P&B
+        arquivos_baixados = baixar_cartoes_da_pasta_drive(
+            service, 
+            pasta_id, 
+            pasta_temporaria,
+            converter_pb=converter_pb,
+            threshold_pb=threshold_pb
+        )
         
         if not arquivos_baixados:
             print("❌ Nenhum arquivo válido foi baixado do Drive.")
             return []
 
+        # 🆕 DETECTAR PDFs COM MÚLTIPLAS PÁGINAS
+        # Verificar extensão do arquivo (caminho completo ou apenas nome)
+        pdfs_multiplos = []
+        arquivos_individuais = []
+        
+        for arquivo in arquivos_baixados:
+            # Pegar apenas o nome do arquivo (não o caminho completo)
+            nome_arquivo = os.path.basename(arquivo) if os.path.isabs(arquivo) else arquivo
+            
+            if nome_arquivo.lower().endswith('.pdf'):
+                pdfs_multiplos.append(arquivo)
+            else:
+                arquivos_individuais.append(arquivo)
+        
+        # Debug: Mostrar o que foi detectado
+        print(f"\n🔍 Arquivos baixados: {len(arquivos_baixados)}")
+        print(f"   📄 PDFs: {len(pdfs_multiplos)}")
+        print(f"   🖼️ Imagens: {len(arquivos_individuais)}")
+        
+        if pdfs_multiplos:
+            print(f"\n{'='*80}")
+            print(f"📄 DETECTADOS {len(pdfs_multiplos)} PDF(s) - Processando múltiplas páginas")
+            print(f"{'='*80}")
+            
+            resultados_pdfs = []
+            
+            for pdf_file in pdfs_multiplos:
+                # Construir caminho completo se necessário
+                if os.path.isabs(pdf_file):
+                    pdf_path = pdf_file
+                else:
+                    pdf_path = os.path.join(pasta_temporaria, pdf_file)
+                
+                print(f"\n📑 Processando PDF: {os.path.basename(pdf_path)}")
+                print(f"   Caminho: {pdf_path}")
+                print(f"   Existe? {os.path.exists(pdf_path)}")
+                
+                if not os.path.exists(pdf_path):
+                    print(f"❌ ERRO: Arquivo não encontrado: {pdf_path}")
+                    continue
+                
+                try:
+                    # Processar PDF com múltiplas páginas
+                    resultados_pdf = processar_pdf_multiplas_paginas(
+                        pdf_path=pdf_path,
+                        num_questoes=num_questoes,
+                        usar_gemini=usar_gemini,
+                        debug_mode=debug_mode,
+                        enviar_para_sheets=enviar_para_sheets,
+                        mover_para_drive=False,  # Mover manualmente depois
+                        pasta_destino_id=pasta_destino_id
+                    )
+                    
+                    if resultados_pdf:
+                        resultados_pdfs.extend(resultados_pdf)
+                        print(f"✅ PDF processado: {len(resultados_pdf)} cartões")
+                    else:
+                        print(f"⚠️ Nenhum cartão processado do PDF")
+                        
+                except Exception as e:
+                    print(f"❌ ERRO ao processar PDF {os.path.basename(pdf_path)}: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # Se processou PDFs e teve sucesso, mover para pasta processada
+            if resultados_pdfs and mover_processados and pasta_destino_id:
+                print(f"\n📦 Movendo PDFs processados no Google Drive...")
+                # Filtrar metadata apenas dos PDFs processados (arquivos_metadata é um dict)
+                pdf_metadata = {nome: meta for nome, meta in arquivos_metadata.items() 
+                               if nome.lower().endswith('.pdf')}
+                mover_arquivos_processados_drive(service, pasta_id, pdf_metadata, pasta_destino_id)
+                
+            # 🆕 IMPORTANTE: Retornar resultados dos PDFs e PARAR aqui
+            # Não processar PDFs novamente como arquivos individuais
+            print(f"\n✅ Processamento de PDFs concluído!")
+            print(f"   Total de cartões processados: {len(resultados_pdfs)}")
+            print(f"\n{'='*80}")
+            return resultados_pdfs
+
         # Se é apenas para gabarito, retornar o diretório temporário
         if apenas_gabarito:
             return pasta_temporaria
 
-        if enviar_para_sheets:
-            resultados = processar_pasta_gabaritos_com_sheets(
-                pasta_temporaria,
-                usar_gemini=usar_gemini,
-                debug_mode=debug_mode
-            )
-        else:
-            resultados = processar_pasta_gabaritos_sem_sheets(
-                pasta_temporaria,
-                usar_gemini=usar_gemini,
-                debug_mode=debug_mode
-            )
+        # 📝 PROCESSAR ARQUIVOS INDIVIDUAIS (imagens normais)
+        if arquivos_individuais:
+            print(f"\n{'='*80}")
+            print(f"🖼️ Processando {len(arquivos_individuais)} arquivos individuais")
+            print(f"{'='*80}")
+            
+            if enviar_para_sheets:
+                resultados = processar_pasta_gabaritos_com_sheets(
+                    pasta_temporaria,
+                    usar_gemini=usar_gemini,
+                    debug_mode=debug_mode,
+                    num_questoes=num_questoes
+                )
+            else:
+                resultados = processar_pasta_gabaritos_sem_sheets(
+                    pasta_temporaria,
+                    usar_gemini=usar_gemini,
+                    debug_mode=debug_mode,
+                    num_questoes=num_questoes
+                )
 
-        # Mover arquivos processados se houve sucesso e está habilitado
-        if resultados and mover_processados:
-            print(f"\n📦 Movendo arquivos processados no Google Drive...")
-            mover_arquivos_processados_drive(service, pasta_id, arquivos_metadata)
+            # Mover arquivos processados se houve sucesso e está habilitado
+            if resultados and mover_processados and pasta_destino_id and num_questoes > 44:
+                print(f"\n📦 Movendo arquivos individuais processados no Google Drive...")
+                # Filtrar metadata apenas dos arquivos individuais (arquivos_metadata é um dict)
+                individual_metadata = {nome: meta for nome, meta in arquivos_metadata.items() 
+                                      if not nome.lower().endswith('.pdf')}
+                mover_arquivos_processados_drive(service, pasta_id, individual_metadata, pasta_destino_id)
+            elif resultados and mover_processados and not pasta_destino_id:
+                print(f"\n⚠️ Pasta de destino não informada. Arquivos não serão movidos.")
 
-        return resultados
+            # Combinar resultados de PDFs + individuais (se houver ambos)
+            if pdfs_multiplos and 'resultados_pdfs' in locals():
+                return resultados_pdfs + resultados
+            
+            return resultados
+        
+        # Se só tinha PDFs, retornar seus resultados
+        if pdfs_multiplos and 'resultados_pdfs' in locals():
+            return resultados_pdfs
+        
+        return []
 
     finally:
         if manter_pasta_temporaria:
@@ -1187,25 +1971,37 @@ def baixar_e_processar_pasta_drive(
         else:
             shutil.rmtree(pasta_temporaria, ignore_errors=True)
 
-def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=None):
+def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=None, questoes_detectadas=None):
     """Envia dados para Google Sheets"""
+
     try:
-        if planilha_id:
-            sheet = client.open_by_key(planilha_id)
-            pass
+        # 👉 Determinar número total de questões
+        total_questoes = resultado_comparacao.get("acertos", 0) + resultado_comparacao.get("erros", 0)
+
+        # 👉 Definir IDs fixos das planilhas
+        GOOGLE_SHEETS_9ANO = "1VJ0_w9eoQcc-ouBnRoq5lFQdR2fVZkqEtR-KArZMuvk"
+        GOOGLE_SHEETS_5ANO = "1DISO8jgKt4FQe2ha9v3kAgMUvoz9WI1HLO67xcsHEXg"
+
+        # 👉 Escolher a planilha com base no número de questões
+        if total_questoes == 44:
+            planilha_id = GOOGLE_SHEETS_5ANO
+            print("📄 Enviando para planilha de 44 questões...")
+        elif total_questoes == 52:
+            planilha_id = GOOGLE_SHEETS_9ANO
+            print("📄 Enviando para planilha de 52 questões...")
         else:
-            planilhas = client.list_spreadsheet_files()
-            print(f"📊 Você tem {len(planilhas)} planilhas no Drive")
-            
-            nome_planilha = "Correção Cartão Resposta"
-            try:
-                sheet = client.open(nome_planilha)
-                print(f"✅ Planilha '{nome_planilha}' encontrada!")
-            except gspread.SpreadsheetNotFound:
-                print(f"📄 Criando nova planilha '{nome_planilha}'...")
-                sheet = client.create(nome_planilha)
-        
-        # Usar primeira aba
+            print(f"⚠️ Número de questões ({total_questoes}) não reconhecido. Registro ignorado.")
+            return False
+
+        # 🆕 VALIDAÇÃO: Verificar se o número de questões detectadas é suficiente
+        if questoes_detectadas is not None:
+            if (total_questoes == 44 and questoes_detectadas < 44) or (total_questoes == 52 and questoes_detectadas < 52):
+                print(f"⚠️ ATENÇÃO: Questões detectadas ({questoes_detectadas}) abaixo do esperado ({total_questoes})")
+                print(f"   ❌ Registro NÃO será enviado para a planilha (detecção incompleta)")
+                return False
+
+        # 👉 Abrir a planilha correta
+        sheet = client.open_by_key(planilha_id)
         worksheet = sheet.sheet1
         
         # Verificar se há cabeçalho
@@ -1389,29 +2185,30 @@ def exibir_gabarito_simples(respostas_gabarito):
     
     print("=" * 30)
 
-def processar_apenas_gabarito(drive_folder_id: str = None, debug_mode: bool = False):
+def processar_apenas_gabarito(DRIVER_FOLDER_9ANO: str = None, debug_mode: bool = False, num_questoes: int = 52):
     """Processa apenas o gabarito e exibe as respostas em formato simples"""
     print("📋 PROCESSANDO APENAS GABARITO")
     print("=" * 40)
     
-    # Usar DRIVE_FOLDER_ID do .env se não fornecido
-    if not drive_folder_id:
-        drive_folder_id = os.getenv('DRIVE_FOLDER_ID')
-        if not drive_folder_id:
-            print("❌ DRIVE_FOLDER_ID não encontrado no arquivo .env")
+    # Usar DRIVER_FOLDER_9ANOO do .env se não fornecido
+    if not DRIVER_FOLDER_9ANOO:
+        DRIVER_FOLDER_9ANOO = os.getenv('DRIVER_FOLDER_9ANOO')
+        if not DRIVER_FOLDER_9ANOO:
+            print("❌ DRIVER_FOLDER_9ANOO não encontrado no arquivo .env")
             return
     
     try:
         # Baixar arquivos do Google Drive
-        print(f"📥 Baixando arquivos da pasta do Drive: {drive_folder_id}")
+        print(f"📥 Baixando arquivos da pasta do Drive: {DRIVER_FOLDER_9ANOO}")
         diretorio_temp = baixar_e_processar_pasta_drive(
-            pasta_id=drive_folder_id,
+            pasta_id=DRIVER_FOLDER_9ANOO,
             usar_gemini=False,
             debug_mode=debug_mode,
             enviar_para_sheets=False,
             manter_pasta_temporaria=True,
             mover_processados=False,
-            apenas_gabarito=True
+            apenas_gabarito=True,
+            num_questoes=num_questoes
         )
         
         if not diretorio_temp:
@@ -1438,14 +2235,12 @@ def processar_apenas_gabarito(drive_folder_id: str = None, debug_mode: bool = Fa
         gabarito_path = os.path.join(diretorio_temp, gabarito_file)
         gabarito_img = preprocessar_arquivo(gabarito_path, "gabarito")
         
-        # Detectar respostas do gabarito
-        if "page_" in gabarito_img and (gabarito_img.endswith(".png") or gabarito_img.endswith(".jpg")):
-            respostas_gabarito = detectar_respostas_pdf(gabarito_img, debug=debug_mode)
-        else:
-            respostas_gabarito = detectar_respostas(gabarito_img, debug=debug_mode)
+        # Detectar respostas do gabarito usando o tipo específico (44 ou 52 questões) com crop de gabarito
+        respostas_gabarito = detectar_respostas_por_tipo(gabarito_img, num_questoes=num_questoes, debug=debug_mode, eh_gabarito=True)
         
         questoes_gabarito = sum(1 for r in respostas_gabarito if r != '?')
-        print(f"✅ Gabarito processado: {questoes_gabarito}/52 questões detectadas")
+        num_questoes = len(respostas_gabarito)
+        print(f"✅ Gabarito processado: {questoes_gabarito}/{num_questoes} questões detectadas")
         
         # Exibir gabarito em formato simples
         exibir_gabarito_simples(respostas_gabarito)
@@ -1464,7 +2259,7 @@ def processar_apenas_gabarito(drive_folder_id: str = None, debug_mode: bool = Fa
 # PROCESSAMENTO EM LOTE
 # ===========================================
 
-def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool = True, debug_mode: bool = False):
+def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool = True, debug_mode: bool = False, num_questoes: int = 52):
     """
     Processa todos os arquivos de uma pasta com cartões (gabarito + alunos)
     - 1 gabarito (template) para comparar com múltiplos alunos
@@ -1474,6 +2269,7 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
         diretorio: Caminho da pasta contendo gabarito e cartões dos alunos
         usar_gemini: Se deve usar Gemini para cabeçalho
         debug_mode: Se deve mostrar debug detalhado
+        num_questoes: Tipo de cartão (44 ou 52 questões)
         
     Returns:
         Lista de resultados de cada aluno processado
@@ -1572,14 +2368,12 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
         gabarito_path = os.path.join(diretorio_gabaritos, gabarito_file)
         gabarito_img = preprocessar_arquivo(gabarito_path, "gabarito")
         
-        # Detectar respostas do gabarito
-        if "page_" in gabarito_img and (gabarito_img.endswith(".png") or gabarito_img.endswith(".jpg")):
-            respostas_gabarito = detectar_respostas_pdf(gabarito_img, debug=debug_mode)
-        else:
-            respostas_gabarito = detectar_respostas(gabarito_img, debug=debug_mode)
+        # Detectar respostas do gabarito usando o tipo específico (44 ou 52 questões)
+        respostas_gabarito = detectar_respostas_por_tipo(gabarito_img, num_questoes=num_questoes, debug=debug_mode, eh_gabarito=True)
         
         questoes_gabarito = sum(1 for r in respostas_gabarito if r != '?')
-        print(f"✅ Gabarito processado: {questoes_gabarito}/52 questões detectadas")
+        num_questoes_detectadas = len(respostas_gabarito)
+        print(f"✅ Gabarito processado: {questoes_gabarito}/{num_questoes_detectadas} questões detectadas")
         
         if questoes_gabarito < 40:
             print("⚠️ ATENÇÃO: Poucas questões detectadas no gabarito.")
@@ -1636,11 +2430,11 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
                 except Exception as e:
                     print(f"⚠️ Gemini falhou, usando nome do arquivo")
             
-            # Detectar respostas do aluno
+            # Detectar respostas do aluno usando o tipo específico (44 ou 52 questões)
             if "page_" in aluno_img and (aluno_img.endswith(".png") or aluno_img.endswith(".jpg")):
                 respostas_aluno = detectar_respostas_pdf(aluno_img, debug=debug_mode)
             else:
-                respostas_aluno = detectar_respostas(aluno_img, debug=debug_mode)
+                respostas_aluno = detectar_respostas_por_tipo(aluno_img, num_questoes=num_questoes, debug=debug_mode)
             
             questoes_aluno = sum(1 for r in respostas_aluno if r != '?')
             
@@ -1739,7 +2533,7 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
                             "erros": resultado["total"] - resultado["acertos"],
                             "percentual": resultado["percentual"]
                         }
-                        enviar_para_planilha(client, dados_simples, resultado_comparacao)
+                        enviar_para_planilha(client, dados_simples, resultado_comparacao, questoes_detectadas=resultado.get("questoes_detectadas"))
                         sucessos += 1
                     except Exception as e:
                         print(f"⚠️ Erro ao enviar {dados_completos['Aluno']}: {e}")
@@ -1751,7 +2545,7 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
     
     return resultados_lote
 
-def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False):
+def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False, num_questoes=52):
     """
     Processa múltiplos cartões de alunos em lote
     
@@ -1759,6 +2553,7 @@ def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False):
         diretorio: Diretório contendo os arquivos
         usar_gemini: Se deve usar Gemini para cabeçalho
         debug_mode: Se deve mostrar debug detalhado
+        num_questoes: Tipo de cartão (44 ou 52 questões)
         
     Returns:
         Lista de resultados de cada aluno processado
@@ -1865,18 +2660,16 @@ def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False):
         # Preprocessar gabarito
         gabarito_img = preprocessar_arquivo(gabarito_file, "gabarito")
         
-        if debug_mode:
-            print("\n=== DEBUG GABARITO ===")
-        
-        # Detectar respostas do gabarito
+        # Detectar respostas do gabarito usando o tipo específico (44 ou 52 questões)
         if "page_" in gabarito_img and (gabarito_img.endswith(".png") or gabarito_img.endswith(".jpg")):
             print("🔍 Usando detecção especializada para PDF...")
             respostas_gabarito = detectar_respostas_pdf(gabarito_img, debug=debug_mode)
         else:
-            respostas_gabarito = detectar_respostas(gabarito_img, debug=debug_mode)
+            respostas_gabarito = detectar_respostas_por_tipo(gabarito_img, num_questoes=num_questoes, debug=debug_mode, eh_gabarito=True)
         
         questoes_gabarito = sum(1 for r in respostas_gabarito if r != '?')
-        print(f"✅ Gabarito processado: {questoes_gabarito}/52 questões detectadas")
+        num_questoes_detectadas = len(respostas_gabarito)
+        print(f"✅ Gabarito processado: {questoes_gabarito}/{num_questoes_detectadas} questões detectadas")
         
         # Exibir gabarito em formato simples
         exibir_gabarito_simples(respostas_gabarito)
@@ -1925,14 +2718,12 @@ def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False):
             else:
                 dados_aluno["Aluno"] = os.path.splitext(aluno_file)[0]  # Usar nome do arquivo
             
-            # Detectar respostas do aluno
-            if "page_" in aluno_img and (aluno_img.endswith(".png") or aluno_img.endswith(".jpg")):
-                respostas_aluno = detectar_respostas_pdf(aluno_img, debug=debug_mode)
-            else:
-                respostas_aluno = detectar_respostas(aluno_img, debug=debug_mode)
+            # Detectar respostas do aluno usando o tipo específico (44 ou 52 questões)
+            respostas_aluno = detectar_respostas_por_tipo(aluno_img, num_questoes=num_questoes, debug=debug_mode)
             
             questoes_aluno = sum(1 for r in respostas_aluno if r != '?')
-            print(f"✅ Respostas processadas: {questoes_aluno}/52 questões detectadas")
+            num_questoes_aluno = len(respostas_aluno)
+            print(f"✅ Respostas processadas: {questoes_aluno}/{num_questoes_aluno} questões detectadas")
             
             # Calcular resultado
             resultado = comparar_respostas(respostas_gabarito, respostas_aluno)
@@ -2004,10 +2795,16 @@ def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False):
     
     return resultados_lote
 
-def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_gemini: bool = True, debug_mode: bool = False):
+def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_gemini: bool = True, debug_mode: bool = False, num_questoes: int = 52):
     """
     Versão da função que NÃO tenta enviar para Google Sheets
     (evita problema de cota do Drive)
+    
+    Args:
+        diretorio: Caminho da pasta contendo gabarito e cartões dos alunos
+        usar_gemini: Se deve usar Gemini para cabeçalho
+        debug_mode: Se deve mostrar debug detalhado
+        num_questoes: Tipo de cartão (44 ou 52 questões)
     """
     
     print("🚀 SISTEMA DE CORREÇÃO - PASTA GABARITOS (SEM GOOGLE SHEETS)")
@@ -2103,14 +2900,12 @@ def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_ge
         gabarito_path = os.path.join(diretorio_gabaritos, gabarito_file)
         gabarito_img = preprocessar_arquivo(gabarito_path, "gabarito")
         
-        # Detectar respostas do gabarito
-        if "page_" in gabarito_img and (gabarito_img.endswith(".png") or gabarito_img.endswith(".jpg")):
-            respostas_gabarito = detectar_respostas_pdf(gabarito_img, debug=debug_mode)
-        else:
-            respostas_gabarito = detectar_respostas(gabarito_img, debug=debug_mode)
+        # Detectar respostas do gabarito usando o tipo específico (44 ou 52 questões)
+        respostas_gabarito = detectar_respostas_por_tipo(gabarito_img, num_questoes=num_questoes, debug=debug_mode, eh_gabarito=True)
         
         questoes_gabarito = sum(1 for r in respostas_gabarito if r != '?')
-        print(f"✅ Gabarito processado: {questoes_gabarito}/52 questões detectadas")
+        num_questoes_detectadas = len(respostas_gabarito)
+        print(f"✅ Gabarito processado: {questoes_gabarito}/{num_questoes_detectadas} questões detectadas")
         
         if questoes_gabarito < 40:
             print("⚠️ ATENÇÃO: Poucas questões detectadas no gabarito.")
@@ -2167,14 +2962,12 @@ def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_ge
                 except Exception as e:
                     print(f"⚠️ Gemini falhou, usando nome do arquivo")
             
-            # Detectar respostas do aluno
-            if "page_" in aluno_img and (aluno_img.endswith(".png") or aluno_img.endswith(".jpg")):
-                respostas_aluno = detectar_respostas_pdf(aluno_img, debug=debug_mode)
-            else:
-                respostas_aluno = detectar_respostas(aluno_img, debug=debug_mode)
+            # Detectar respostas do aluno usando o tipo específico (44 ou 52 questões)
+            respostas_aluno = detectar_respostas_por_tipo(aluno_img, num_questoes=num_questoes, debug=debug_mode)
             
             questoes_aluno = sum(1 for r in respostas_aluno if r != '?')
-            print(f"✅ Respostas processadas: {questoes_aluno}/52 questões detectadas")
+            num_questoes_aluno = len(respostas_aluno)
+            print(f"✅ Respostas processadas: {questoes_aluno}/{num_questoes_aluno} questões detectadas")
             
             # Calcular resultado
             resultado = comparar_respostas(respostas_gabarito, respostas_aluno)
@@ -2260,10 +3053,17 @@ def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_ge
 def processar_pasta_gabaritos_com_sheets(
     diretorio: str = "./gabaritos",
     usar_gemini: bool = True,
-    debug_mode: bool = False
+    debug_mode: bool = False,
+    num_questoes: int = 52
 ):
     """
     Versão da função que ENVIA para Google Sheets com controle de rate limiting
+    
+    Args:
+        diretorio: Caminho da pasta contendo gabarito e cartões dos alunos
+        usar_gemini: Se deve usar Gemini para cabeçalho
+        debug_mode: Se deve mostrar debug detalhado
+        num_questoes: Tipo de cartão (44 ou 52 questões)
     """
     import time
     
@@ -2376,14 +3176,12 @@ def processar_pasta_gabaritos_com_sheets(
         gabarito_path = os.path.join(diretorio_gabaritos, gabarito_file)
         gabarito_img = preprocessar_arquivo(gabarito_path, "gabarito")
         
-        # Detectar respostas do gabarito
-        if "page_" in gabarito_img and (gabarito_img.endswith(".png") or gabarito_img.endswith(".jpg")):
-            respostas_gabarito = detectar_respostas_pdf(gabarito_img, debug=debug_mode)
-        else:
-            respostas_gabarito = detectar_respostas(gabarito_img, debug=debug_mode)
+        # Detectar respostas do gabarito usando o tipo específico (44 ou 52 questões)
+        respostas_gabarito = detectar_respostas_por_tipo(gabarito_img, num_questoes=num_questoes, debug=debug_mode, eh_gabarito=True)
         
         questoes_gabarito = sum(1 for r in respostas_gabarito if r != '?')
-        print(f"✅ Gabarito processado: {questoes_gabarito}/52 questões detectadas")
+        num_questoes_detectadas = len(respostas_gabarito)
+        print(f"✅ Gabarito processado: {questoes_gabarito}/{num_questoes_detectadas} questões detectadas")
         
         # Exibir gabarito em formato simples
         exibir_gabarito_simples(respostas_gabarito)
@@ -2444,57 +3242,12 @@ def processar_pasta_gabaritos_com_sheets(
                 except Exception as e:
                     print(f"⚠️ Gemini falhou, usando nome do arquivo")
             
-            # Detectar respostas do aluno
-            if "page_" in aluno_img and (aluno_img.endswith(".png") or aluno_img.endswith(".jpg")):
-                respostas_aluno = detectar_respostas_pdf(aluno_img, debug=debug_mode)
-            else:
-                respostas_aluno = detectar_respostas(aluno_img, debug=debug_mode)
+            # Detectar respostas do aluno usando o tipo específico (44 ou 52 questões)
+            respostas_aluno = detectar_respostas_por_tipo(aluno_img, num_questoes=num_questoes, debug=debug_mode)
             
             questoes_aluno = sum(1 for r in respostas_aluno if r != '?')
-            print(f"✅ Respostas processadas: {questoes_aluno}/52 questões detectadas")
-            
-            # ===========================================
-            # DEBUG: MOSTRAR DETECÇÕES DE QUESTÕES
-            # ===========================================
-            
-            if debug_mode:
-                print(f"\n🔍 DEBUG - RESPOSTAS DETECTADAS PARA {dados_aluno['Aluno']}:")
-                print("=" * 60)
-                
-                # Mostrar respostas em formato organizado (4 colunas, 13 linhas)
-                for linha in range(13):  # 13 linhas de questões
-                    questoes_linha = []
-                    for coluna in range(4):  # 4 colunas (A, B, C, D)
-                        questao_num = linha * 4 + coluna + 1
-                        if questao_num <= 52:
-                            resposta = respostas_aluno[questao_num - 1] if questao_num <= len(respostas_aluno) else '?'
-                            questoes_linha.append(f"Q{questao_num:02d}:{resposta}")
-                    
-                    print("   " + "  ".join(f"{q:<6}" for q in questoes_linha))
-                
-                # Mostrar estatísticas de detecção
-                detectadas_por_alternativa = {
-                    'A': sum(1 for r in respostas_aluno if r == 'A'),
-                    'B': sum(1 for r in respostas_aluno if r == 'B'), 
-                    'C': sum(1 for r in respostas_aluno if r == 'C'),
-                    'D': sum(1 for r in respostas_aluno if r == 'D'),
-                    '?': sum(1 for r in respostas_aluno if r == '?')
-                }
-                
-                print(f"\n📊 ESTATÍSTICAS DE DETECÇÃO:")
-                print(f"   🅰️ Alternativa A: {detectadas_por_alternativa['A']} questões")
-                print(f"   🅱️ Alternativa B: {detectadas_por_alternativa['B']} questões") 
-                print(f"   🅲 Alternativa C: {detectadas_por_alternativa['C']} questões")
-                print(f"   🅳 Alternativa D: {detectadas_por_alternativa['D']} questões")
-                print(f"   ❓ Não detectadas: {detectadas_por_alternativa['?']} questões")
-                print(f"   ✅ Total detectado: {questoes_aluno}/52 questões ({(questoes_aluno/52)*100:.1f}%)")
-                
-                # Mostrar questões não detectadas se houver
-                if detectadas_por_alternativa['?'] > 0:
-                    nao_detectadas = [i+1 for i, r in enumerate(respostas_aluno) if r == '?']
-                    print(f"   ⚠️ Questões não detectadas: {nao_detectadas}")
-                
-                print("=" * 60)
+            num_questoes_aluno = len(respostas_aluno)
+            print(f"✅ Respostas processadas: {questoes_aluno}/{num_questoes_aluno} questões detectadas")
             
             # Calcular resultado
             resultado = comparar_respostas(respostas_gabarito, respostas_aluno)
@@ -2524,7 +3277,7 @@ def processar_pasta_gabaritos_com_sheets(
                     if i > 1:  # Não aguardar no primeiro
                         time.sleep(2)
                     
-                    if enviar_para_planilha(client, dados_aluno, resultado, planilha_id=PLANILHA_ID):
+                    if enviar_para_planilha(client, dados_aluno, resultado, planilha_id=PLANILHA_ID, questoes_detectadas=questoes_aluno):
                         alunos_enviados_sheets += 1
                         print(f"✅ Enviado para Google Sheets ({alunos_enviados_sheets}/{len(arquivos_alunos)})")
                     else:
@@ -2608,6 +3361,299 @@ def processar_pasta_gabaritos_com_sheets(
     return resultados_lote
 
 
+def processar_pdf_multiplas_paginas(
+    pdf_path: str,
+    num_questoes: int = 52,
+    usar_gemini: bool = True,
+    debug_mode: bool = False,
+    enviar_para_sheets: bool = True,
+    mover_para_drive: bool = True,
+    pasta_destino_id: str = None
+):
+    """
+    🆕 NOVA FUNÇÃO: Processa PDF com MÚLTIPLAS PÁGINAS de cartões resposta
+    
+    Workflow:
+    1. Converte TODAS as páginas do PDF para PNG
+    2. Processa CADA página como um cartão individual
+    3. Envia resultados para Google Sheets
+    4. Move arquivo processado para pasta do Drive
+    
+    Args:
+        pdf_path: Caminho do arquivo PDF (pode ter múltiplas páginas)
+        num_questoes: Tipo de cartão (44 ou 52 questões)
+        usar_gemini: Se deve usar Gemini para extrair cabeçalho
+        debug_mode: Se deve mostrar informações de debug
+        enviar_para_sheets: Se deve enviar para Google Sheets
+        mover_para_drive: Se deve mover arquivo para pasta processada
+        pasta_destino_id: ID da pasta de destino no Drive (5º ou 9º ano)
+        
+    Returns:
+        Lista de resultados de todos os cartões processados
+        
+    Exemplo de uso:
+        >>> resultados = processar_pdf_multiplas_paginas(
+        ...     pdf_path="cartoes_turma_a.pdf",
+        ...     num_questoes=52,
+        ...     enviar_para_sheets=True
+        ... )
+        >>> print(f"Processados {len(resultados)} cartões do PDF!")
+    """
+    from pdf_processor_simple import process_pdf_all_pages
+    
+    print("=" * 80)
+    print("🚀 PROCESSAMENTO DE PDF COM MÚLTIPLAS PÁGINAS")
+    print("=" * 80)
+    
+    # Validar arquivo
+    if not os.path.exists(pdf_path):
+        print(f"❌ Arquivo não encontrado: {pdf_path}")
+        return []
+    
+    if not pdf_path.lower().endswith('.pdf'):
+        print(f"❌ Arquivo não é PDF: {pdf_path}")
+        return []
+    
+    # Configurar Gemini se necessário
+    model_gemini = None
+    if usar_gemini:
+        try:
+            model_gemini = configurar_gemini()
+            print("✅ Gemini configurado!")
+        except Exception as e:
+            print(f"⚠️ Erro ao configurar Gemini: {e}")
+            usar_gemini = False
+    
+    # Configurar Google Sheets se necessário
+    client = None
+    if enviar_para_sheets:
+        try:
+            client = configurar_google_sheets()
+            print("✅ Google Sheets configurado!")
+        except Exception as e:
+            print(f"⚠️ Erro ao configurar Google Sheets: {e}")
+            enviar_para_sheets = False
+    
+    try:
+        # 1️⃣ CONVERTER TODAS AS PÁGINAS PARA PNG
+        print(f"\n📄 Convertendo TODAS as páginas do PDF para PNG...")
+        imagens_paginas = process_pdf_all_pages(pdf_path, keep_temp_files=True)
+        
+        if not imagens_paginas:
+            print("❌ Nenhuma imagem foi gerada do PDF")
+            return []
+        
+        print(f"✅ {len(imagens_paginas)} páginas convertidas!")
+        
+        # 🆕 1.5️⃣ CONVERTER TODAS AS IMAGENS PARA PRETO E BRANCO
+        print(f"\n🎨 Convertendo imagens para Preto e Branco...")
+        imagens_pb = []
+        
+        for i, img_path in enumerate(imagens_paginas, 1):
+            try:
+                print(f"   [{i}/{len(imagens_paginas)}] Convertendo {os.path.basename(img_path)}...", end='')
+                
+                # Converter para P&B
+                img_pb_path = converter_para_preto_e_branco(
+                    img_path,
+                    threshold=180,  # Threshold padrão
+                    salvar=True
+                )
+                
+                if img_pb_path and os.path.exists(img_pb_path):
+                    # Substituir original pela versão P&B
+                    os.remove(img_path)
+                    os.rename(img_pb_path, img_path)
+                    imagens_pb.append(img_path)
+                    print(" ✅")
+                else:
+                    # Se falhar, usar original
+                    imagens_pb.append(img_path)
+                    print(" ⚠️ (usando original)")
+                    
+            except Exception as e:
+                print(f" ❌ Erro: {e}")
+                imagens_pb.append(img_path)  # Usar original se falhar
+        
+        print(f"✅ {len(imagens_pb)} imagens prontas para processamento")
+        
+        # Usar imagens P&B daqui em diante
+        imagens_paginas = imagens_pb
+        
+        # 2️⃣ BUSCAR GABARITO EM ARQUIVO SEPARADO (não no PDF)
+        print(f"\n📋 Buscando gabarito em arquivo separado...")
+        
+        # O gabarito deve estar na mesma pasta do PDF (arquivo PNG/JPG com "gabarito" no nome)
+        pasta_pdf = os.path.dirname(pdf_path)
+        gabarito_img = None
+        
+        # Buscar arquivo de gabarito na pasta
+        for arquivo in os.listdir(pasta_pdf):
+            if 'gabarito' in arquivo.lower() and arquivo.lower().endswith(('.png', '.jpg', '.jpeg')):
+                gabarito_path = os.path.join(pasta_pdf, arquivo)
+                gabarito_img = gabarito_path
+                print(f"✅ Gabarito encontrado: {arquivo}")
+                break
+        
+        if not gabarito_img:
+            print("❌ ERRO: Arquivo de gabarito não encontrado na pasta!")
+            print(f"   Procurei por arquivo PNG/JPG com 'gabarito' no nome em: {pasta_pdf}")
+            return []
+        
+        # 🆕 TODAS as páginas do PDF são cartões de alunos
+        cartoes_alunos = imagens_paginas  # Todas as páginas são alunos!
+        
+        print(f"✅ Cartões de alunos no PDF: {len(cartoes_alunos)} páginas")
+        
+        # 3️⃣ PROCESSAR GABARITO
+        print(f"\n{'='*80}")
+        print("📋 PROCESSANDO GABARITO (Arquivo separado)")
+        print(f"{'='*80}")
+        
+        respostas_gabarito = detectar_respostas_por_tipo(
+            gabarito_img, 
+            num_questoes=num_questoes, 
+            debug=True,  # 🆕 Sempre ativar debug para gabarito
+            eh_gabarito=True
+        )
+        
+        questoes_gabarito = sum(1 for r in respostas_gabarito if r != '?')
+        print(f"\n✅ Gabarito processado: {questoes_gabarito}/{num_questoes} questões detectadas")
+        
+        if questoes_gabarito < num_questoes * 0.8:  # Menos de 80% detectado
+            print(f"⚠️ ATENÇÃO: Poucas questões detectadas no gabarito ({questoes_gabarito}/{num_questoes})")
+            print("   Isso pode afetar a correção dos cartões dos alunos.")
+        
+        # Exibir gabarito
+        print(f"\n{'='*60}")
+        print("📋 GABARITO:")
+        print(f"{'='*60}")
+        exibir_gabarito_simples(respostas_gabarito)
+        
+        # 4️⃣ PROCESSAR CADA CARTÃO DE ALUNO
+        resultados_todos = []
+        
+        print(f"\n{'='*80}")
+        print(f"👥 PROCESSANDO {len(cartoes_alunos)} CARTÕES DE ALUNOS")
+        print(f"{'='*80}")
+        
+        for i, cartao_img in enumerate(cartoes_alunos, 1):
+            pagina_num = i  # 🆕 Agora todas as páginas são alunos (1, 2, 3...)
+            print(f"\n🔄 [{i:02d}/{len(cartoes_alunos)}] Processando Página {pagina_num}")
+            print("-" * 60)
+            
+            try:
+                # Extrair dados do cabeçalho
+                dados_aluno = {
+                    "Aluno": f"Página_{pagina_num}",
+                    "Escola": "N/A",
+                    "Nascimento": "N/A",
+                    "Turma": "N/A"
+                }
+                
+                if usar_gemini and model_gemini:
+                    try:
+                        dados_extraidos = extrair_cabecalho_com_fallback(model_gemini, cartao_img)
+                        if dados_extraidos and dados_extraidos.get("aluno"):
+                            dados_aluno["Aluno"] = dados_extraidos.get("aluno", f"Página_{pagina_num}")
+                            dados_aluno["Escola"] = dados_extraidos.get("escola", "N/A")
+                            dados_aluno["Turma"] = dados_extraidos.get("turma", "N/A")
+                            dados_aluno["Nascimento"] = dados_extraidos.get("nascimento", "N/A")
+                    except Exception as e:
+                        pass  # Silenciar erros do Gemini
+                
+                # Detectar respostas do aluno (COM debug para análise)
+                respostas_aluno = detectar_respostas_por_tipo(
+                    cartao_img, 
+                    num_questoes=num_questoes, 
+                    debug=True  # 🆕 Ativar debug para ver detecção das bolhas
+                )
+                
+                questoes_detectadas = sum(1 for r in respostas_aluno if r != '?')
+                
+                # Verificar se detectou questões suficientes
+                if questoes_detectadas < num_questoes * 0.5:  # Menos de 50%
+                    print(f"❌ Página {pagina_num}: Poucas questões ({questoes_detectadas}/{num_questoes}) - IGNORADO")
+                    continue
+                
+                # Comparar com gabarito
+                resultado = comparar_respostas(respostas_gabarito, respostas_aluno)
+                
+                # 🆕 MOSTRAR APENAS RESUMO COMPACTO
+                print(f"\n{'─'*60}")
+                print(f"� {dados_aluno['Aluno']}")
+                print(f"📚 Turma: {dados_aluno['Turma']} | Escola: {dados_aluno['Escola']}")
+                print(f"✅ Acertos: {resultado['acertos']}")
+                print(f"❌ Erros: {resultado['erros']}")
+                print(f"📊 Percentual: {resultado['percentual']:.1f}%")
+                
+                # 🆕 MOSTRAR GABARITO DE RESPOSTAS DO ALUNO
+                print(f"\n📝 Respostas:")
+                exibir_gabarito_simples(respostas_aluno)
+                
+                print(f"{'─'*60}")
+                
+                # Armazenar resultado
+                resultados_todos.append({
+                    "pagina": pagina_num,
+                    "arquivo": os.path.basename(pdf_path),
+                    "dados_aluno": dados_aluno,
+                    "resultado": resultado,
+                    "questoes_detectadas": questoes_detectadas
+                })
+                
+                # Enviar para Google Sheets (silencioso)
+                if enviar_para_sheets and client:
+                    try:
+                        enviar_para_planilha(client, dados_aluno, resultado, questoes_detectadas=questoes_detectadas)
+                    except Exception as e:
+                        print(f"⚠️ Erro ao enviar para Sheets: {e}")
+                
+            except Exception as e:
+                print(f"❌ ERRO ao processar página {pagina_num}: {e}")
+                continue
+        
+        # 5️⃣ RESUMO FINAL
+        print(f"\n{'='*80}")
+        print("📊 RESUMO DO PROCESSAMENTO")
+        # 🆕 RESUMO FINAL COMPACTO
+        print(f"\n{'='*80}")
+        print(f"📄 PDF: {os.path.basename(pdf_path)}")
+        print(f"{'='*80}")
+        print(f"📋 Total de páginas: {len(imagens_paginas)}")
+        print(f"✅ Cartões processados: {len(resultados_todos)}/{len(cartoes_alunos)}")
+        
+        if len(resultados_todos) > 0:
+            media_acertos = sum(r['resultado']['acertos'] for r in resultados_todos) / len(resultados_todos)
+            media_erros = sum(r['resultado']['erros'] for r in resultados_todos) / len(resultados_todos)
+            media_percentual = sum(r['resultado']['percentual'] for r in resultados_todos) / len(resultados_todos)
+            
+            print(f"\n📊 ESTATÍSTICAS:")
+            print(f"   Média de acertos: {media_acertos:.1f}/{num_questoes}")
+            print(f"   Média de erros: {media_erros:.1f}/{num_questoes}")
+            print(f"   Média geral: {media_percentual:.1f}%")
+        
+        print(f"{'='*80}")
+        
+        # 6️⃣ LIMPAR ARQUIVOS TEMPORÁRIOS
+        print(f"\n🧹 Limpando arquivos temporários...")
+        for img in imagens_paginas:
+            try:
+                if os.path.exists(img):
+                    os.remove(img)
+            except:
+                pass
+        
+        print("✅ Processamento concluído!")
+        return resultados_todos
+        
+    except Exception as e:
+        print(f"❌ ERRO CRÍTICO: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
 # ===========================================
 # EXECUÇÃO PRINCIPAL
 # ===========================================
@@ -2617,13 +3663,11 @@ if __name__ == "__main__":
         description="Sistema automatizado de correção de cartões resposta com Google Drive e Google Sheets."
     )
 
-    default_drive_folder = os.getenv("DRIVE_FOLDER_ID")
-    
     parser.add_argument(
         "--drive-folder",
-        dest="drive_folder_id",
-        default=default_drive_folder,
-        help="ID da pasta do Google Drive contendo gabarito e cartões dos alunos"
+        dest="drive_folder_custom",
+        default=None,
+        help="ID CUSTOMIZADO da pasta do Google Drive (opcional - sobrescreve as pastas padrão)"
     )
     parser.add_argument(
         "--gabarito",
@@ -2641,6 +3685,38 @@ if __name__ == "__main__":
         default=5,
         help="Intervalo de verificação em minutos para modo monitor (padrão: 5)"
     )
+    parser.add_argument(
+        "--converter-pb",
+        action="store_true",
+        default=True,
+        help="Converte imagens para preto e branco automaticamente (padrão: ativado)"
+    )
+    parser.add_argument(
+        "--no-converter-pb",
+        dest="converter_pb",
+        action="store_false",
+        help="Desativa conversão automática para preto e branco"
+    )
+    parser.add_argument(
+        "--threshold",
+        type=int,
+        default=180,
+        help="Threshold para conversão P&B, 0-255 (padrão: 180, menor=mais preto)"
+    )
+    parser.add_argument(
+        "--questoes",
+        type=int,
+        choices=[44, 52],
+        default=52,
+        help="Número de questões no cartão (44 ou 52, padrão: 52)"
+    )
+    parser.add_argument(
+        "--pdf-multiplo",
+        type=str,
+        default=None,
+        metavar="ARQUIVO.PDF",
+        help="🆕 Processa PDF com múltiplas páginas (cada página = 1 cartão). Ex: --pdf-multiplo cartoes_turma.pdf"
+    )
 
     args = parser.parse_args()
 
@@ -2656,13 +3732,126 @@ if __name__ == "__main__":
     debug_mode = True
     mover_processados = True
     manter_temp = False
+    
+    # Configurações de conversão P&B
+    converter_pb = args.converter_pb
+    threshold_pb = args.threshold
+    
+    # Configuração do tipo de cartão
+    num_questoes = args.questoes
+    
+    # Menu interativo para escolher tipo de cartão (se não foi passado via CLI)
+    if num_questoes == 52:  # Valor padrão
+        print("\n" + "=" * 60)
+        print("📋 TIPO DE CARTÃO RESPOSTA")
+        print("=" * 60)
+        print("\nEscolha o tipo de cartão que você vai processar:")
+        print("  [1] 44 questões (4 colunas × 11 questões)")
+        print("  [2] 52 questões (4 colunas × 13 questões)")
+        print()
+        
+        while True:
+            try:
+                escolha = input("Digite 1 ou 2 (padrão: 2): ").strip()
+                
+                if escolha == "":
+                    escolha = "2"
+                
+                if escolha == "1":
+                    num_questoes = 44
+                    print("✅ Selecionado: 44 questões")
+                    break
+                elif escolha == "2":
+                    num_questoes = 52
+                    print("✅ Selecionado: 52 questões")
+                    break
+                else:
+                    print("❌ Opção inválida! Digite 1 ou 2.")
+            except KeyboardInterrupt:
+                print("\n\n❌ Operação cancelada pelo usuário.")
+                exit(0)
+            except Exception as e:
+                print(f"❌ Erro: {e}. Tente novamente.")
+        
+        print("=" * 60)
+    
+    print(f"\n📋 Tipo de cartão: {num_questoes} questões")
+    if converter_pb:
+        print(f"🎨 Conversão P&B: ATIVADA (threshold={threshold_pb})")
+    else:
+        print(f"🎨 Conversão P&B: DESATIVADA")
 
-    # Sempre usar Google Drive
-    drive_folder_id = args.drive_folder_id or os.getenv("DRIVE_FOLDER_ID")
+    # 👉 Carregar IDs das pastas do Google Drive do arquivo .env
+    DRIVER_FOLDER_UPLOAD = os.getenv("DRIVER_FOLDER_ID")  # Pasta de UPLOAD (origem)
+    DRIVER_FOLDER_5ANO = os.getenv("DRIVER_FOLDER_5ANO")   # Pasta 5º ano (destino 44 questões)
+    DRIVER_FOLDER_9ANO = os.getenv("DRIVER_FOLDER_9ANO")   # Pasta 9º ano (destino 52 questões)
+    
+    # Validar se as variáveis foram carregadas
+    if not all([DRIVER_FOLDER_UPLOAD, DRIVER_FOLDER_5ANO, DRIVER_FOLDER_9ANO]):
+        print("❌ ERRO: Variáveis de ambiente não configuradas no .env!")
+        print("   Verifique se DRIVER_FOLDER_ID, DRIVER_FOLDER_5ANO e DRIVER_FOLDER_9ANO estão definidos.")
+        exit(1)
+    
+    # Sempre usa a pasta de UPLOAD como origem
+    if args.drive_folder_custom:
+        # Usar pasta customizada se fornecida
+        pasta_drive_id = args.drive_folder_custom
+        print(f"📁 Usando pasta customizada do Drive: {pasta_drive_id}")
+    else:
+        pasta_drive_id = DRIVER_FOLDER_UPLOAD
+    
+    # Escolher pasta de DESTINO baseado no número de questões
+    if num_questoes == 44:
+        pasta_destino_id = DRIVER_FOLDER_5ANO
+        print(f"� Destino após processamento: 5º ano (44 questões)")
+    else:  # 52 questões
+        pasta_destino_id = DRIVER_FOLDER_9ANO
+        print(f"� Destino após processamento: 9º ano (52 questões)")
+    
+    print("=" * 60)
+
+    # 🆕 MODO ESPECIAL: PDF COM MÚLTIPLAS PÁGINAS
+    if args.pdf_multiplo:
+        print("\n" + "=" * 80)
+        print("🆕 MODO: PROCESSAMENTO DE PDF COM MÚLTIPLAS PÁGINAS")
+        print("=" * 80)
+        
+        if not os.path.exists(args.pdf_multiplo):
+            print(f"❌ ERRO: Arquivo não encontrado: {args.pdf_multiplo}")
+            exit(1)
+        
+        if not args.pdf_multiplo.lower().endswith('.pdf'):
+            print(f"❌ ERRO: Arquivo não é PDF: {args.pdf_multiplo}")
+            print("   Use --pdf-multiplo apenas com arquivos .pdf")
+            exit(1)
+        
+        print(f"\n📄 Processando: {args.pdf_multiplo}")
+        print(f"📋 Tipo de cartão: {num_questoes} questões")
+        print(f"🤖 Gemini: {'ATIVADO' if usar_gemini else 'DESATIVADO'}")
+        print(f"📊 Google Sheets: {'ATIVADO' if enviar_para_sheets else 'DESATIVADO'}")
+        print(f"🔍 Debug: {'ATIVADO' if debug_mode else 'DESATIVADO'}")
+        
+        # Processar o PDF
+        resultados = processar_pdf_multiplas_paginas(
+            pdf_path=args.pdf_multiplo,
+            num_questoes=num_questoes,
+            usar_gemini=usar_gemini,
+            debug_mode=debug_mode,
+            enviar_para_sheets=enviar_para_sheets,
+            mover_para_drive=False,  # Não move para Drive neste modo
+            pasta_destino_id=pasta_destino_id
+        )
+        
+        if resultados:
+            print(f"\n✅ SUCESSO! {len(resultados)} cartões processados do PDF")
+        else:
+            print(f"\n❌ FALHA! Nenhum cartão foi processado")
+        
+        exit(0)
 
     # Modo especial: apenas exibir gabarito
     if args.gabarito:
-        processar_apenas_gabarito(drive_folder_id, debug_mode)
+        processar_apenas_gabarito(pasta_drive_id, debug_mode, num_questoes)
         exit(0)
 
     # Modo especial: monitoramento contínuo
@@ -2714,7 +3903,7 @@ if __name__ == "__main__":
                     return [], set()
                 
                 # Listar arquivos na pasta
-                query = f"'{drive_folder_id}' in parents and trashed = false"
+                query = f"'{pasta_drive_id}' in parents and trashed = false"
                 results = drive_service.files().list(
                     q=query,
                     fields="files(id, name, mimeType, modifiedTime)",
@@ -2723,6 +3912,15 @@ if __name__ == "__main__":
                 
                 arquivos = results.get('files', [])
                 arquivos_processados = carregar_historico()
+                
+                # 🆕 DEBUG: Mostrar TODOS os arquivos encontrados
+                print(f"\n📂 Arquivos na pasta do Drive: {len(arquivos)}")
+                for arq in arquivos:
+                    nome = arq['name']
+                    arquivo_id = arq['id']
+                    ja_processado = arquivo_id in arquivos_processados
+                    status = "✅ PROCESSADO" if ja_processado else "🆕 NOVO"
+                    print(f"   {status} | {nome} ")
                 
                 novos_cartoes = []
                 tem_gabarito = False
@@ -2734,21 +3932,32 @@ if __name__ == "__main__":
                     # Verificar se é o gabarito (nunca marcar como processado)
                     if 'gabarito' in nome and any(ext in nome for ext in ['.pdf', '.png', '.jpg', '.jpeg']):
                         tem_gabarito = True
+                        print(f"📋 Gabarito detectado: {arquivo['name']}")
                         continue
                     
                     # Verificar se é um cartão de aluno NOVO (por ID)
                     if (arquivo_id not in arquivos_processados and 
                         any(ext in nome for ext in ['.pdf', '.png', '.jpg', '.jpeg'])):
+                        tipo = "📄 PDF" if nome.endswith('.pdf') else "🖼️ Imagem"
+                        print(f"   {tipo} NOVO detectado: {arquivo['name']}")
                         novos_cartoes.append(arquivo)
                 
                 if not tem_gabarito and novos_cartoes:
                     print("⚠️ Novos cartões encontrados mas GABARITO não está na pasta!")
                     return [], arquivos_processados
                 
+                print(f"\n📊 Resumo:")
+                print(f"   Total na pasta: {len(arquivos)}")
+                print(f"   Já processados: {len(arquivos_processados)}")
+                print(f"   Gabarito: {'✅ Encontrado' if tem_gabarito else '❌ Não encontrado'}")
+                print(f"   Novos a processar: {len(novos_cartoes)}")
+                
                 return novos_cartoes, arquivos_processados
                 
             except Exception as e:
                 print(f"❌ Erro ao verificar arquivos: {e}")
+                import traceback
+                traceback.print_exc()
                 return [], set()
         
         # Loop de monitoramento
@@ -2766,7 +3975,7 @@ if __name__ == "__main__":
                     if novos_cartoes:
                         print(f"🆕 Encontrados {len(novos_cartoes)} NOVOS cartões!")
                         for arquivo in novos_cartoes:
-                            print(f"   -> {arquivo['name']} (ID: {arquivo['id'][:20]}...)")
+                            print(f"   -> {arquivo['name']} ")
                         
                         # Processar APENAS os novos cartões
                         print("🚀 Processando APENAS os novos cartões...")
@@ -2784,7 +3993,7 @@ if __name__ == "__main__":
                             
                             if enviar_para_sheets:
                                 client = configurar_google_sheets()
-                                PLANILHA_ID = os.getenv('GOOGLE_SHEETS_ID')
+                                PLANILHA_ID = os.getenv('GOOGLE_SHEETS_9ANO')
                             else:
                                 client = None
                                 PLANILHA_ID = None
@@ -2796,7 +4005,7 @@ if __name__ == "__main__":
                             print(f"📁 Pasta temporária: {pasta_temp}")
                             
                             # 1. Baixar gabarito
-                            query_gabarito = f"'{drive_folder_id}' in parents and name contains 'gabarito' and trashed = false"
+                            query_gabarito = f"'{pasta_drive_id}' in parents and name contains 'gabarito' and trashed = false"
                             results_gabarito = drive_service.files().list(
                                 q=query_gabarito,
                                 fields="files(id, name, mimeType)",
@@ -2818,86 +4027,231 @@ if __name__ == "__main__":
                                 while not done:
                                     status, done = downloader.next_chunk()
                             
-                            # Processar gabarito
+                            # Processar gabarito usando o tipo específico (44 ou 52 questões) com crop de gabarito
                             gabarito_img = preprocessar_arquivo(gabarito_path, "gabarito")
-                            if "page_" in gabarito_img:
-                                respostas_gabarito = detectar_respostas_pdf(gabarito_img, debug=False)
-                            else:
-                                respostas_gabarito = detectar_respostas(gabarito_img, debug=False)
+                            respostas_gabarito = detectar_respostas_por_tipo(gabarito_img, num_questoes=num_questoes, debug=False, eh_gabarito=True)
                             
                             questoes_gabarito = sum(1 for r in respostas_gabarito if r != '?')
-                            print(f"✅ Gabarito: {questoes_gabarito}/52 questões")
+                            num_questoes_detectadas = len(respostas_gabarito)
+                            print(f"✅ Gabarito: {questoes_gabarito}/{num_questoes_detectadas} questões")
                             
-                            # 2. Processar cada cartão NOVO
+                            # 2. Processar cada cartão NOVO (separar PDFs de imagens)
                             ids_processados_agora = []
+                            pdfs_para_processar = []
+                            imagens_para_processar = []
                             
-                            for i, cartao_info in enumerate(novos_cartoes, 1):
-                                try:
-                                    print(f"\n🔄 [{i}/{len(novos_cartoes)}] {cartao_info['name']}")
-                                    
-                                    # Baixar cartão
-                                    request = drive_service.files().get_media(fileId=cartao_info['id'])
-                                    cartao_path = os.path.join(pasta_temp, cartao_info['name'])
-                                    with open(cartao_path, 'wb') as f:
-                                        downloader = MediaIoBaseDownload(f, request)
-                                        done = False
-                                        while not done:
-                                            status, done = downloader.next_chunk()
-                                    
-                                    # Processar cartão
-                                    aluno_img = preprocessar_arquivo(cartao_path, f"aluno_{i}")
-                                    
-                                    # Extrair cabeçalho
-                                    if model_gemini:
-                                        dados_aluno = extrair_cabecalho_com_fallback(model_gemini, aluno_img)
-                                    else:
-                                        dados_aluno = extrair_cabecalho_com_ocr_fallback(aluno_img)
-                                    
-                                    if not dados_aluno or dados_aluno.get("aluno") == "N/A":
-                                        dados_aluno = {
-                                            "escola": "N/A",
-                                            "aluno": os.path.splitext(cartao_info['name'])[0],
-                                            "turma": "N/A",
-                                            "nascimento": "N/A"
-                                        }
-                                    
-                                    # Detectar respostas
-                                    if "page_" in aluno_img:
-                                        respostas_aluno = detectar_respostas_pdf(aluno_img, debug=False)
-                                    else:
-                                        respostas_aluno = detectar_respostas(aluno_img, debug=False)
-                                    
-                                    # Comparar com gabarito
-                                    resultado = comparar_respostas(respostas_gabarito, respostas_aluno)
-                                    print(f"   � {resultado['acertos']}/{resultado['total']} acertos ({resultado['percentual']:.1f}%)")
-                                    
-                                    # Enviar para Google Sheets
-                                    if client and PLANILHA_ID:
-                                        dados_envio = {
-                                            "Escola": dados_aluno.get("escola", "N/A"),
-                                            "Aluno": dados_aluno.get("aluno", "N/A"),
-                                            "Nascimento": dados_aluno.get("nascimento", "N/A"),
-                                            "Turma": dados_aluno.get("turma", "N/A")
-                                        }
-                                        enviar_para_planilha(client, dados_envio, resultado, PLANILHA_ID)
-                                    
-                                    # Marcar como processado
-                                    ids_processados_agora.append(cartao_info['id'])
-                                    
-                                except Exception as e:
-                                    print(f"   ❌ Erro: {e}")
+                            # Separar PDFs de imagens
+                            for cartao_info in novos_cartoes:
+                                nome = cartao_info['name'].lower()
+                                if nome.endswith('.pdf'):
+                                    pdfs_para_processar.append(cartao_info)
+                                elif nome.endswith(('.png', '.jpg', '.jpeg')):
+                                    imagens_para_processar.append(cartao_info)
+                            
+                            print(f"\n📊 Arquivos detectados:")
+                            print(f"   📄 PDFs: {len(pdfs_para_processar)}")
+                            print(f"   🖼️ Imagens: {len(imagens_para_processar)}")
+                            
+                            # ═══════════════════════════════════════════════════
+                            # PROCESSAR PDFs (MÚLTIPLAS PÁGINAS)
+                            # ═══════════════════════════════════════════════════
+                            if pdfs_para_processar:
+                                print(f"\n{'='*80}")
+                                print(f"📄 PROCESSANDO {len(pdfs_para_processar)} PDF(s) COM MÚLTIPLAS PÁGINAS")
+                                print(f"{'='*80}")
+                                
+                                from pdf_processor_simple import process_pdf_all_pages
+                                
+                                for pdf_idx, pdf_info in enumerate(pdfs_para_processar, 1):
+                                    try:
+                                        print(f"\n📄 [{pdf_idx}/{len(pdfs_para_processar)}] {pdf_info['name']}")
+                                        
+                                        # Baixar PDF
+                                        request = drive_service.files().get_media(fileId=pdf_info['id'])
+                                        pdf_path = os.path.join(pasta_temp, pdf_info['name'])
+                                        with open(pdf_path, 'wb') as f:
+                                            downloader = MediaIoBaseDownload(f, request)
+                                            done = False
+                                            while not done:
+                                                status, done = downloader.next_chunk()
+                                        
+                                        print(f"✅ PDF baixado: {pdf_info['name']}")
+                                        
+                                        # Converter TODAS as páginas para PNG
+                                        print(f"🔄 Convertendo páginas do PDF para PNG...")
+                                        imagens_paginas = process_pdf_all_pages(pdf_path, keep_temp_files=True)
+                                        
+                                        if not imagens_paginas:
+                                            print(f"❌ Nenhuma página convertida do PDF")
+                                            continue
+                                        
+                                        print(f"✅ {len(imagens_paginas)} páginas convertidas!")
+                                        
+                                        # Converter para P&B
+                                        print(f"🎨 Convertendo para P&B...")
+                                        for img_idx, img_path in enumerate(imagens_paginas, 1):
+                                            try:
+                                                img_pb_path = converter_para_preto_e_branco(
+                                                    img_path,
+                                                    threshold=threshold_pb,
+                                                    salvar=True
+                                                )
+                                                if img_pb_path and os.path.exists(img_pb_path):
+                                                    os.remove(img_path)
+                                                    os.rename(img_pb_path, img_path)
+                                            except Exception as e:
+                                                print(f"   ⚠️ Erro ao converter página {img_idx}: {e}")
+                                        
+                                        print(f"✅ Todas as páginas prontas!")
+                                        
+                                        # Processar CADA página como um aluno
+                                        print(f"\n{'─'*60}")
+                                        print(f"👥 Processando {len(imagens_paginas)} alunos do PDF")
+                                        print(f"{'─'*60}")
+                                        
+                                        for pagina_idx, pagina_img in enumerate(imagens_paginas, 1):
+                                            try:
+                                                print(f"\n🔄 Página {pagina_idx}/{len(imagens_paginas)}")
+                                                
+                                                # Extrair cabeçalho
+                                                if model_gemini:
+                                                    dados_aluno = extrair_cabecalho_com_fallback(model_gemini, pagina_img)
+                                                else:
+                                                    dados_aluno = extrair_cabecalho_com_ocr_fallback(pagina_img)
+                                                
+                                                if not dados_aluno or dados_aluno.get("aluno") == "N/A":
+                                                    dados_aluno = {
+                                                        "escola": "N/A",
+                                                        "aluno": f"{os.path.splitext(pdf_info['name'])[0]}_pag{pagina_idx}",
+                                                        "turma": "N/A",
+                                                        "nascimento": "N/A"
+                                                    }
+                                                
+                                                # Detectar respostas
+                                                respostas_aluno = detectar_respostas_por_tipo(
+                                                    pagina_img, 
+                                                    num_questoes=num_questoes, 
+                                                    debug=False
+                                                )
+                                                
+                                                questoes_detectadas = sum(1 for r in respostas_aluno if r != '?')
+                                                
+                                                # Verificar detecção mínima
+                                                if questoes_detectadas < num_questoes * 0.5:
+                                                    print(f"   ⚠️ Poucas questões detectadas ({questoes_detectadas}/{num_questoes}) - IGNORADO")
+                                                    continue
+                                                
+                                                # Comparar com gabarito
+                                                resultado = comparar_respostas(respostas_gabarito, respostas_aluno)
+                                                print(f"   ✅ {resultado['acertos']}/{resultado['total']} acertos ({resultado['percentual']:.1f}%)")
+                                                
+                                                # Enviar para Sheets
+                                                if client and PLANILHA_ID:
+                                                    dados_envio = {
+                                                        "Escola": dados_aluno.get("escola", "N/A"),
+                                                        "Aluno": dados_aluno.get("aluno", "N/A"),
+                                                        "Nascimento": dados_aluno.get("nascimento", "N/A"),
+                                                        "Turma": dados_aluno.get("turma", "N/A")
+                                                    }
+                                                    enviar_para_planilha(client, dados_envio, resultado, PLANILHA_ID, questoes_detectadas=questoes_detectadas)
+                                                
+                                            except Exception as e:
+                                                print(f"   ❌ Erro na página {pagina_idx}: {e}")
+                                        
+                                        # Limpar imagens temporárias do PDF
+                                        for img in imagens_paginas:
+                                            try:
+                                                if os.path.exists(img):
+                                                    os.remove(img)
+                                            except:
+                                                pass
+                                        
+                                        # Marcar PDF como processado
+                                        ids_processados_agora.append(pdf_info['id'])
+                                        print(f"\n✅ PDF processado: {pdf_info['name']}")
+                                        
+                                    except Exception as e:
+                                        print(f"   ❌ Erro ao processar PDF: {e}")
+                                        import traceback
+                                        traceback.print_exc()
+                            
+                            # ═══════════════════════════════════════════════════
+                            # PROCESSAR IMAGENS (PÁGINA ÚNICA)
+                            # ═══════════════════════════════════════════════════
+                            if imagens_para_processar:
+                                print(f"\n{'='*80}")
+                                print(f"🖼️ PROCESSANDO {len(imagens_para_processar)} IMAGEM(NS)")
+                                print(f"{'='*80}")
+                                
+                                for img_idx, cartao_info in enumerate(imagens_para_processar, 1):
+                                    try:
+                                        print(f"\n🔄 [{img_idx}/{len(imagens_para_processar)}] {cartao_info['name']}")
+                                        
+                                        # Baixar imagem
+                                        request = drive_service.files().get_media(fileId=cartao_info['id'])
+                                        cartao_path = os.path.join(pasta_temp, cartao_info['name'])
+                                        with open(cartao_path, 'wb') as f:
+                                            downloader = MediaIoBaseDownload(f, request)
+                                            done = False
+                                            while not done:
+                                                status, done = downloader.next_chunk()
+                                        
+                                        # Converter para P&B se habilitado
+                                        if converter_pb:
+                                            cartao_path = converter_para_preto_e_branco(cartao_path, threshold=threshold_pb, salvar=True)
+                                        
+                                        # Processar cartão
+                                        aluno_img = preprocessar_arquivo(cartao_path, f"aluno_{img_idx}")
+                                        
+                                        # Extrair cabeçalho
+                                        if model_gemini:
+                                            dados_aluno = extrair_cabecalho_com_fallback(model_gemini, aluno_img)
+                                        else:
+                                            dados_aluno = extrair_cabecalho_com_ocr_fallback(aluno_img)
+                                        
+                                        if not dados_aluno or dados_aluno.get("aluno") == "N/A":
+                                            dados_aluno = {
+                                                "escola": "N/A",
+                                                "aluno": os.path.splitext(cartao_info['name'])[0],
+                                                "turma": "N/A",
+                                                "nascimento": "N/A"
+                                            }
+                                        
+                                        # Detectar respostas
+                                        respostas_aluno = detectar_respostas_por_tipo(aluno_img, num_questoes=num_questoes, debug=False)
+                                        questoes_detectadas = sum(1 for r in respostas_aluno if r != '?')
+                                        
+                                        # Comparar com gabarito
+                                        resultado = comparar_respostas(respostas_gabarito, respostas_aluno)
+                                        print(f"   ✅ {resultado['acertos']}/{resultado['total']} acertos ({resultado['percentual']:.1f}%)")
+                                        
+                                        # Enviar para Google Sheets
+                                        if client and PLANILHA_ID:
+                                            dados_envio = {
+                                                "Escola": dados_aluno.get("escola", "N/A"),
+                                                "Aluno": dados_aluno.get("aluno", "N/A"),
+                                                "Nascimento": dados_aluno.get("nascimento", "N/A"),
+                                                "Turma": dados_aluno.get("turma", "N/A")
+                                            }
+                                            enviar_para_planilha(client, dados_envio, resultado, PLANILHA_ID, questoes_detectadas=questoes_detectadas)
+                                        
+                                        # Marcar como processado
+                                        ids_processados_agora.append(cartao_info['id'])
+                                        
+                                    except Exception as e:
+                                        print(f"   ❌ Erro: {e}")
                             
                             # 3. Mover arquivos processados no Drive
                             if mover_processados and ids_processados_agora:
                                 print(f"\n📦 Movendo {len(ids_processados_agora)} cartões...")
-                                pasta_processados_id = encontrar_ou_criar_pasta_processados(drive_service, drive_folder_id)
+                                pasta_processados_id = encontrar_ou_criar_pasta_processados(drive_service, pasta_drive_id)
                                 if pasta_processados_id:
                                     for cartao_info in novos_cartoes:
                                         if cartao_info['id'] in ids_processados_agora:
                                             mover_arquivo_no_drive(
                                                 drive_service,
                                                 cartao_info['id'],
-                                                drive_folder_id,
+                                                pasta_drive_id,
                                                 pasta_processados_id,
                                                 cartao_info['name']
                                             )
@@ -2942,12 +4296,16 @@ if __name__ == "__main__":
 
         
     resultados = baixar_e_processar_pasta_drive(
-        pasta_id=drive_folder_id,
+        pasta_id=pasta_drive_id,
+        pasta_destino_id=pasta_destino_id,
         usar_gemini=usar_gemini,
         debug_mode=debug_mode,
         enviar_para_sheets=enviar_para_sheets,
         manter_pasta_temporaria=manter_temp,
-        mover_processados=mover_processados
+        mover_processados=mover_processados,
+        converter_pb=converter_pb,
+        threshold_pb=threshold_pb,
+        num_questoes=num_questoes
     )
 
     if resultados:

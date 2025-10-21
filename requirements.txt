@@ -1,24 +1,61 @@
-# Processamento de imagens e OCR
-opencv-python
-pillow
-pytesseract
-numpy
-scikit-learn
+# ============================================
+# SISTEMA DE CORREÇÃO DE CARTÕES-RESPOSTA OMR
+# ============================================
 
-# Google APIs
-gspread
-google-auth
-google-auth-oauthlib
-google-auth-httplib2
-google-api-python-client
-google-generativeai
+# ────────────────────────────────────────────
+# Processamento de Imagens e OCR
+# ────────────────────────────────────────────
+opencv-python>=4.8.0        # Visão computacional e detecção OMR
+pillow>=10.0.0             # Manipulação de imagens
+pytesseract>=0.3.10        # OCR para extração de texto
+numpy>=1.24.0              # Arrays e operações numéricas
+scikit-learn>=1.3.0        # K-means clustering para detecção
 
-# Processamento de PDF
-PyMuPDF
-pdf2image
+# ────────────────────────────────────────────
+# Google APIs - Drive e Sheets
+# ────────────────────────────────────────────
+gspread>=5.11.0                    # API Google Sheets
+google-auth>=2.23.0                # Autenticação Google
+google-auth-oauthlib>=1.1.0        # OAuth2 flow
+google-auth-httplib2>=0.1.1        # HTTP library para Google Auth
+google-api-python-client>=2.100.0  # API Google Drive
 
+# ────────────────────────────────────────────
+# Google AI - Gemini (extração de cabeçalho)
+# ────────────────────────────────────────────
+google-generativeai>=0.3.0   # API Gemini para OCR avançado
+
+# ────────────────────────────────────────────
+# Processamento de PDFs
+# ────────────────────────────────────────────
+pdf2image>=1.16.3          # Conversão PDF → PNG (requer Poppler)
+# PyMuPDF>=1.23.0          # Alternativa (não usado atualmente)
+
+# ────────────────────────────────────────────
 # Utilitários
-requests
+# ────────────────────────────────────────────
+python-dotenv>=1.0.0       # Variáveis de ambiente (.env)
+requests>=2.31.0           # Requisições HTTP (opcional)
 
-#Variável de ambiente
-python-dotenv
+# ────────────────────────────────────────────
+# NOTAS DE INSTALAÇÃO:
+# ────────────────────────────────────────────
+# 1. Poppler (para processar PDFs):
+#    ✅ Instalação AUTOMÁTICA via código!
+#    O script detecta se o Poppler não está instalado e
+#    oferece instalação automática ao processar o primeiro PDF.
+#    
+#    Caminho de instalação: C:\poppler\Library\bin
+#
+# 2. Tesseract OCR (OBRIGATÓRIO para OCR):
+#    Windows: https://github.com/UB-Mannheim/tesseract/wiki
+#    Instalar e adicionar ao PATH
+#
+# 3. Instalar dependências:
+#    pip install -r requirements.txt
+#
+# 4. Configurar credenciais Google:
+#    - Criar projeto no Google Cloud Console
+#    - Ativar APIs: Drive, Sheets, Gemini
+#    - Baixar credenciais JSON
+#    - Criar arquivo .env com tokens

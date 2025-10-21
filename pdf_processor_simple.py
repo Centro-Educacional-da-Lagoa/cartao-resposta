@@ -23,13 +23,98 @@ except ImportError:
 from PIL import Image
 import cv2
 import numpy as np
+import requests
+import zipfile
+import io
+import sys
+
+# ===========================================
+# INSTALAÇÃO AUTOMÁTICA DO POPPLER
+# ===========================================
+
+def instalar_poppler_automaticamente():
+    """
+    Baixa e instala o Poppler automaticamente no Windows
+    """
+    print("\n🔧 Instalando Poppler automaticamente...")
+    
+    # Caminho de instalação
+    install_path = Path("C:/poppler")
+    
+    # Verificar se já está instalado
+    if install_path.exists() and (install_path / "Library" / "bin" / "pdftoppm.exe").exists():
+        print("✅ Poppler já está instalado!")
+        return str(install_path / "Library" / "bin")
+    
+    try:
+        # URL do Poppler pré-compilado (Windows)
+        poppler_url = "https://github.com/oschwartz10612/poppler-windows/releases/download/v24.08.0-0/Release-24.08.0-0.zip"
+        
+        print(f"📥 Baixando Poppler de: {poppler_url}")
+        print("   Aguarde, isso pode levar alguns minutos...")
+        
+        # Baixar arquivo
+        response = requests.get(poppler_url, stream=True)
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded = 0
+        
+        zip_data = io.BytesIO()
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                zip_data.write(chunk)
+                downloaded += len(chunk)
+                if total_size > 0:
+                    percent = (downloaded / total_size) * 100
+                    print(f"\r   Progresso: {percent:.1f}%", end='')
+        
+        print("\n✅ Download concluído!")
+        
+        # Extrair ZIP
+        print(f"📦 Extraindo para: {install_path}")
+        install_path.mkdir(parents=True, exist_ok=True)
+        
+        with zipfile.ZipFile(zip_data) as zip_ref:
+            # Extrair apenas os arquivos necessários
+            for member in zip_ref.namelist():
+                if member.startswith('poppler-24.08.0/'):
+                    # Remover o prefixo 'poppler-24.08.0/' ao extrair
+                    target_path = install_path / member.replace('poppler-24.08.0/', '')
+                    
+                    if member.endswith('/'):
+                        target_path.mkdir(parents=True, exist_ok=True)
+                    else:
+                        target_path.parent.mkdir(parents=True, exist_ok=True)
+                        with zip_ref.open(member) as source, open(target_path, 'wb') as target:
+                            target.write(source.read())
+        
+        print("✅ Poppler instalado com sucesso!")
+        print(f"📍 Localização: {install_path}")
+        
+        bin_path = install_path / "Library" / "bin"
+        if bin_path.exists():
+            print(f"✅ Executáveis encontrados em: {bin_path}")
+            return str(bin_path)
+        else:
+            print(f"⚠️ Aviso: Pasta bin não encontrada em {bin_path}")
+            return None
+        
+    except Exception as e:
+        print(f"❌ Erro ao instalar Poppler: {e}")
+        print("\n📝 INSTALAÇÃO MANUAL:")
+        print("   1. Baixe: https://github.com/oschwartz10612/poppler-windows/releases")
+        print("   2. Extraia para: C:\\poppler")
+        print("   3. Reinicie o script")
+        return None
 
 # ===========================================
 # CONFIGURACOES PARA PROCESSAMENTO DE PDF
 # ===========================================
 
-# Qualidade DPI para conversao (maior = melhor qualidade, mas arquivos maiores)
-DEFAULT_DPI = 300  # 300 DPI e ideal para OCR/OMR
+# Qualidade DPI para conversao (ajustado para compatibilidade com imagens normais)
+# Imagens de cartões normalmente são ~150 DPI, então usamos o mesmo para PDFs
+DEFAULT_DPI = 150  # 150 DPI = compatível com imagens de scan/foto normais
 
 # Formato de saida das imagens convertidas
 DEFAULT_FORMAT = 'PNG'  # PNG mantem qualidade, JPEG e menor
@@ -59,22 +144,40 @@ def convert_pdf_to_images(pdf_path: str, dpi: int = DEFAULT_DPI,
         # Detectar se poppler esta disponivel no sistema
         poppler_path = None
         
-        # Tentar localizar poppler no Windows
+        # Tentar localizar poppler no Windows (incluindo variações de maiúscula/minúscula)
         possible_poppler_paths = [
+            r"C:\poppler\Library\bin",  # 🆕 Novo caminho após instalação automática
             r"C:\Program Files\poppler\bin",
-            r"C:\Program Files (x86)\poppler\bin", 
+            r"C:\Program Files (x86)\poppler\bin",
             r"C:\poppler\bin",
-            os.path.join(os.getcwd(), "poppler", "bin")
+            r"C:\Poppler\bin",  # Variação com P maiúsculo
+            r"C:\Program Files\Poppler\bin",
+            r"C:\Program Files (x86)\Poppler\bin",
+            r"C:\ProgramData\chocolatey\lib\poppler\tools\bin",  # Instalação via Chocolatey
+            os.path.join(os.getcwd(), "poppler", "bin"),
+            os.path.join(os.getcwd(), "Poppler", "bin")
         ]
         
         for path in possible_poppler_paths:
             if os.path.exists(path) and os.path.exists(os.path.join(path, "pdftoppm.exe")):
                 poppler_path = path
-                print(f"OK - Poppler encontrado em: {poppler_path}")
+                print(f"✓ OK - Poppler encontrado em: {poppler_path}")
                 break
         
-        if not poppler_path:
-            print("AVISO - Poppler nao encontrado, tentando sem especificar caminho...")
+        # 🆕 Se não encontrou, tentar instalar automaticamente
+        if not poppler_path and sys.platform == "win32":
+            print("\n⚠️ Poppler não encontrado!")
+            resposta = input("Deseja instalar automaticamente? (S/N): ").strip().upper()
+            
+            if resposta == 'S':
+                poppler_path = instalar_poppler_automaticamente()
+                if not poppler_path:
+                    print("❌ Falha na instalação automática")
+            else:
+                print("\n📝 INSTALAÇÃO MANUAL:")
+                print("  1. Baixe: https://github.com/oschwartz10612/poppler-windows/releases")
+                print("  2. Extraia para: C:\\poppler")
+                print("  3. Reinicie o script")
         
         # Converter PDF para imagens
         try:
@@ -95,8 +198,6 @@ def convert_pdf_to_images(pdf_path: str, dpi: int = DEFAULT_DPI,
             else:
                 raise e
         
-        print(f"OK - PDF convertido! Total de paginas: {len(images)}")
-        
         # Salvar imagens temporarias
         temp_files = []
         base_name = Path(pdf_path).stem
@@ -109,7 +210,6 @@ def convert_pdf_to_images(pdf_path: str, dpi: int = DEFAULT_DPI,
             # Salvar imagem
             image.save(temp_path, format=output_format, quality=95, dpi=(dpi, dpi))
             temp_files.append(temp_path)
-            print(f"   Pagina {i+1} salva como: {temp_filename}")
         
         return temp_files
         
@@ -322,6 +422,50 @@ def setup_pdf_support() -> bool:
         print("ERRO - Suporte a PDF nao esta funcionando completamente")
     
     return success
+
+def process_pdf_all_pages(pdf_path: str, keep_temp_files: bool = True) -> List[str]:
+    """
+    Processa PDF e retorna TODAS as páginas como imagens individuais
+    
+    Args:
+        pdf_path: Caminho do arquivo PDF
+        keep_temp_files: Se True, mantém os arquivos PNG gerados
+        
+    Returns:
+        Lista com os caminhos de TODAS as imagens geradas (uma por página)
+        
+    Exemplo:
+        >>> images = process_pdf_all_pages("cartoes_multiplos.pdf")
+        >>> # Retorna: ["cartoes_page_1.png", "cartoes_page_2.png", ...]
+    """
+    if not is_pdf_file(pdf_path):
+        # Se não é PDF, retorna o próprio arquivo
+        return [pdf_path]
+    
+    print(f"\n📄 PROCESSANDO TODAS AS PÁGINAS DO PDF: {os.path.basename(pdf_path)}")
+    
+    try:
+        # Converter PDF para imagens (TODAS as páginas)
+        temp_images = convert_pdf_to_images(pdf_path)
+        
+        if not temp_images:
+            raise Exception("Nenhuma imagem foi gerada do PDF")
+        
+        # Se deve manter arquivos temporários, retornar todas as imagens
+        if keep_temp_files:
+            return temp_images
+        else:
+            # Fazer cópia permanente antes de limpar
+            permanent_images = []
+            for temp_img in temp_images:
+                perm_path = temp_img.replace("_temp", "")
+                os.rename(temp_img, perm_path)
+                permanent_images.append(perm_path)
+            return permanent_images
+        
+    except Exception as e:
+        print(f"❌ ERRO ao processar PDF: {e}")
+        raise
 
 # ===========================================
 # EXEMPLO DE USO

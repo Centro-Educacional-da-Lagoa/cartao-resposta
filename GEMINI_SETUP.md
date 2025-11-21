@@ -26,8 +26,9 @@ GEMINI_API_KEY = "sua-chave-real-aqui"
 ## ⚠️ Considerações
 
 ### Erros de análise
-- Cartões-resposta com cabeçalho em manuscrito podem ter erros
-- Orientar cartões-resposta com o cabeçalho digitado com as informações dos alunos para maior confiabilidade
+- Cartões-resposta com cabeçalho em manuscrito podem conter erros
+- Orientar cartões-resposta com o cabeçalho digitalizado com as informações dos alunos para maior confiabilidade
+- OMR nunca é 100% preciso, por isso é recomendável as folhas estarem alinhadas, bem preenchidas com bola (não rabiscadas) e com uma boa iluminação (sem sombra sobre o papel)
 
 ### Custos
 - Gemini API tem custo por uso

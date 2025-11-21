@@ -5,7 +5,6 @@
 ## 🚀 Funcionalidades
 
 - ✅ **Detecção automática** de gabaritos e folhas de resposta
-- 🔍 **OCR avançado** com processamento de imagem otimizado  
 - 🤖 **Extração de cabeçalho** com Google Gemini AI
 - 📊 **Integração com Google Sheets** para armazenamento automático
 - ☁️ **Sincronização com Google Drive** (download automático da pasta configurada)
@@ -23,14 +22,6 @@
 3. **Correção**: Compara respostas do aluno com o gabarito
 4. **Resultados**: Envia automaticamente para Google Sheets com rate limiting
 
-## 🛠️ Instalação
-
-### Pré-requisitos
-
-- **Python 3.8+**
-- **Tesseract OCR**
-- **Google Cloud APIs** (Sheets + Gemini)
-
 ### 1. Clone o repositório
 
 ```bash
@@ -38,18 +29,26 @@ git clone https://github.com/JEAND1AS/cartao-resposta.git
 cd cartao-resposta
 ```
 
-### 2. Criar e ativar ambiente virtual (Recomendado)
+### 2. Pré-requisitos para o passo de instalação
+- **Python 3.8+**
+- **Google Cloud APIs** (Sheets + Gemini)
+
+## 🛠️ Instalação
+
+###Criar e ativar ambiente virtual
 
 #### Windows (PowerShell):
+
 ```bash
+
 # Criar ambiente virtual
 python -m venv .venv
 
 # Ativar ambiente virtual
 .\.venv\Scripts\Activate.ps1
 
-# Verificar se está ativo (deve aparecer (.venv) no prompt)
-(.venv) PS C:\...\cartao-resposta>
+#Comando para instalar dependencias
+pip install -r requirements.txt
 ```
 
 #### Linux/macOS:
@@ -60,26 +59,7 @@ python3 -m venv .venv
 # Ativar ambiente virtual
 source .venv/bin/activate
 
-# Verificar se está ativo (deve aparecer (.venv) no prompt)
-(.venv) user@computer:~/cartao-resposta$
-```
-
-### Comando para ser utilizado dentro do ambiente virtual
-
-### 4. Comandos úteis para ambiente virtual
-
-```bash
-# Ativar ambiente virtual
-.\.venv\Scripts\Activate.ps1
-
-# Desativar ambiente virtual
-deactivate
-
-```
-
-### 3. Instale as dependências locais e no ambiente virtual caso necessário
-
-```bash
+#Comando para instalar dependencias
 pip install -r requirements.txt
 ```
 
@@ -88,7 +68,7 @@ pip install -r requirements.txt
 
 ### 1. Configurar arquivo .env para guardar chaves secretas
 
-- A biblioteca do .env será instalada automaticamente após executar o requirements.text
+- A biblioteca do .env será instalada automaticamente após executar o requirements.txt
 - Dentro do .env defina os nomes das variáveis de ambiente ex: (GEMINI_API_KEY = sua_key_aqui, GOOGLE_SHEETS_ID = "sua_key_aqui", DRIVE_FOLDER_ID = "sua_key_aqui")
 
 
@@ -99,12 +79,13 @@ Siga as instruções em [`INSTRUCOES_GOOGLE_SHEETS.md`](INSTRUCOES_GOOGLE_SHEETS
 - Ativar APIs necessárias  
 - Gerar credenciais de service account
 - Salvar como `credenciais_google.json`
+- Jogar o `credenciais_google.json` dentro da pasta raiz
 
 ### 3. Google Gemini AI
 
 Siga as instruções em [`GEMINI_SETUP.md`](GEMINI_SETUP.md) para:
 - Obter API key do Gemini
-- Configurar variáveis de ambiente
+- Configurar na variável de ambiente .env
 
 ### 4. Google Drive API
 
@@ -114,12 +95,32 @@ Para baixar os cartões direto do Google Drive:
 - Copie o **ID da pasta** (ex.: `https://drive.google.com/drive/folders/ID_AQUI`)
 - defina a variável de ambiente `DRIVE_FOLDER_ID` dentro do arquivo .env
 
+### 5. Criar pastas e planilhas no Google Drive:
+
+Crie com essa estrutura:
+
+Google Drive
+└── PastA "cartão-resposta" (Pasta raiz)
+├── Pasta "5° ano" (44 questões) (Subpasta)
+│ └── Planilha com informações dos alunos do 5° ano
+├── Pasta "9° ano" (52 questões) (Subpasta)
+│ └── Planilha com informações dos alunos do 9° ano
+└── Arquivo "gabarito" (52 ou 44 questões) Voce precisa ter o gabarito nomeado como gabarito.jpg ou gabarito.png
+
+OBS: Verifque o cabeçalho das planilhasr, está disponível dentro do README INSTRUCOES_GOOGLE_SHEETS
+
 ## 🎮 Como Usar
 
-### Modo Local (Recomendado)
+### Modo Local para ler os cartões disponível na pasta do drive
 
 ```bash
 python script.py
+```
+
+### Modo monitor para ficar verificando a pasta do drive e ler automaticamente quando um novo cartão é adicionado
+
+```bash
+python script.py -monitor --intervalo 1
 ```
 
 
@@ -168,11 +169,10 @@ um diretório temporário, processar os cartões e remover os arquivos no final.
 
 ## 📊 Formato do Google Sheets
 
-O sistema cria/atualiza uma planilha com as colunas:
 
-| Data/Hora  | Escola | Aluno  | Nascimento | Turma | Acertos | Erros  | Percentual | 
-|------------|--------|--------|------------|-------|---------|------- |------------|
-| 25/09/2025 |   ABC  | João   | 15/03/2005 |  902  |    42   |    10  |   80.8%    |
+| Data/Hora  | Escola | Aluno  | Nascimento | Turma | Acertos | Erros  | Questoes anuladas | Porcentagem |
+|------------|--------|--------|------------|-------|---------|------- |-------------------|-------------|
+| 25/09/2025 |   ABC  | João   | 15/03/2005 |  902  |    42   |    10  |        0          |   80.8%     |
 
 ## 🐛 Solução de Problemas
 

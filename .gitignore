@@ -64,6 +64,10 @@ resposta_*.png
 resposta_*.jpg
 resposta_*.jpeg
 resposta_*.pdf
+*.png
+*.jpg
+*.jpeg
+*.pdf
 
 # Logs
 *.log

@@ -16,6 +16,7 @@
 # ===========================================
 
 from PIL import Image
+import time
 import pytesseract
 import cv2
 import numpy as np
@@ -89,7 +90,6 @@ def converter_para_preto_e_branco(image_path: str, threshold: int = 180, salvar:
         img = cv2.imread(image_path)
         if img is None:
             raise Exception(f"Não foi possível carregar a imagem: {image_path}")
-        
         # Converter para escala de cinza
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
@@ -116,6 +116,144 @@ def converter_para_preto_e_branco(image_path: str, threshold: int = 180, salvar:
         print(f"   ❌ Erro: {e}")
         return image_path
 
+def corrigir_rotacao_documento(image_path: str, debug: bool = False) -> str:
+    """
+    🔧 CORREÇÃO DE ROTAÇÃO - VERSÃO MELHORADA
+    
+    Detecta e corrige inclinação de documentos com precisão.
+    
+    Args:
+        image_path: Caminho da imagem
+        debug: Se deve salvar imagens intermediárias
+        
+    Returns:
+        Caminho da imagem corrigida
+    """
+    try:
+        img = cv2.imread(image_path)
+        if img is None:
+            return image_path
+        
+        height, width = img.shape[:2]
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # ═══════════════════════════════════════════════════
+        # MÉTODO 1: Detectar contorno do documento
+        # ═══════════════════════════════════════════════════
+        
+        # Binarização adaptativa (melhor para iluminação irregular)
+        binary = cv2.adaptiveThreshold(
+            gray, 255, 
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY, 
+            11, 2
+        )
+        
+        # Encontrar contornos
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        angle_correcao = None
+        
+        if contours:
+            # Pegar o maior contorno (documento)
+            maior_contorno = max(contours, key=cv2.contourArea)
+            
+            # MinAreaRect retorna: ((center_x, center_y), (width, height), angle)
+            rect = cv2.minAreaRect(maior_contorno)
+            angle_raw = rect[2]
+            
+            # 🔧 CORREÇÃO DE ÂNGULO - OpenCV usa -90 a 0
+            # Se width > height, o ângulo está na orientação errada
+            box_width, box_height = rect[1]
+            
+            if box_width < box_height:
+                angle_correcao = angle_raw
+            else:
+                angle_correcao = angle_raw + 90
+            
+            # Normalizar para -45° a 45°
+            if angle_correcao > 45:
+                angle_correcao = angle_correcao - 90
+            elif angle_correcao < -45:
+                angle_correcao = angle_correcao + 90
+            
+            if debug:
+                print(f"   📐 Método 1 (Contorno): {angle_correcao:.3f}°")
+        
+        # ═══════════════════════════════════════════════════
+        # MÉTODO 2: Hough Lines (Fallback)
+        # ═══════════════════════════════════════════════════
+        
+        if angle_correcao is None or abs(angle_correcao) < 0.05:
+            edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+            lines = cv2.HoughLines(edges, 1, np.pi/180, 200)
+            
+            if lines is not None and len(lines) > 5:
+                angles = []
+                for line in lines[:20]:  # Pegar 20 linhas mais fortes
+                    rho, theta = line[0]
+                    angle_deg = np.degrees(theta) - 90  # Converter para graus
+                    
+                    # Filtrar ângulos próximos de 0° (linhas horizontais/verticais)
+                    if -45 <= angle_deg <= 45:
+                        angles.append(angle_deg)
+                
+                if angles:
+                    # Usar mediana (mais robusto que média)
+                    angle_correcao = np.median(angles)
+                    
+                    if debug:
+                        print(f"   📐 Método 2 (Hough): {angle_correcao:.3f}°")
+        
+        # ═══════════════════════════════════════════════════
+        # Aplicar Rotação
+        # ═══════════════════════════════════════════════════
+        
+        if angle_correcao is None:
+            print("   ⚠️ Não foi possível detectar ângulo")
+            return image_path
+        
+        # ✅ Corrigir rotações >= 0.05 graus (mais sensível)
+        if abs(angle_correcao) < 0.05:
+            if debug:
+                print(f"   ✅ Rotação insignificante ({angle_correcao:.3f}°)")
+            return image_path
+        
+        print(f"   🔄 Corrigindo rotação: {angle_correcao:.3f}°")
+        
+        # Matriz de rotação
+        center = (width // 2, height // 2)
+        rotation_matrix = cv2.getRotationMatrix2D(center, angle_correcao, 1.0)
+        
+        # Rotacionar com borda branca
+        img_rotated = cv2.warpAffine(
+            img,
+            rotation_matrix,
+            (width, height),
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(255, 255, 255),  # Branco
+            flags=cv2.INTER_CUBIC
+        )
+        
+        # Salvar imagem corrigida
+        nome_base = os.path.splitext(image_path)[0]
+        extensao = os.path.splitext(image_path)[1]
+        output_path = f"{nome_base}_deskewed{extensao}"
+        
+        cv2.imwrite(output_path, img_rotated, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        
+        if debug:
+            # Salvar imagem de debug com linhas detectadas
+            debug_img = img.copy()
+            cv2.drawContours(debug_img, [maior_contorno], -1, (0, 255, 0), 3)
+            cv2.imwrite(f"{nome_base}_debug_contorno.png", debug_img)
+        
+        return output_path
+        
+    except Exception as e:
+        print(f"   ❌ Erro na correção: {e}")
+        return image_path
+
 def preprocessar_arquivo(file_path: str, tipo: str = "aluno") -> str:
     """
     Preprocessa arquivo (PDF ou imagem) para garantir que temos uma imagem processável
@@ -139,7 +277,10 @@ def preprocessar_arquivo(file_path: str, tipo: str = "aluno") -> str:
         try:
             best_image, temp_files = process_pdf_file(file_path, keep_temp_files=False)
             print(f" Imagem gerada: {os.path.basename(best_image)}")
-            return best_image
+            
+            # Retornar imagem sem correção
+            best_image_corrigido = corrigir_rotacao_documento(best_image, debug=True)
+            return best_image_corrigido
         except Exception as e:
             print(f"❌ Erro ao converter PDF: {e}")
             raise e
@@ -150,6 +291,7 @@ def preprocessar_arquivo(file_path: str, tipo: str = "aluno") -> str:
             # Tentar carregar a imagem para validar
             img = Image.open(file_path)
             img.verify()  # Verificar se a imagem é válida
+            
             return file_path
         except Exception as e:
             raise Exception(f"Arquivo de imagem inválido: {e}")
@@ -491,17 +633,17 @@ def detectar_respostas_52_questoes(image_path, debug=False, eh_gabarito=False):
         area = cv2.contourArea(cnt)
         
         # PARÂMETROS MENOS RIGOROSOS - Detecta mais bolhas
-        if 150 < area < 800: 
+        if 80 < area < 1200: 
             perimeter = cv2.arcLength(cnt, True)
             if perimeter > 0:
                 circularity = 4 * np.pi * area / (perimeter * perimeter)
                 
 
-                if circularity > 0.25: 
+                if circularity > 0.15: 
                     x, y, w, h = cv2.boundingRect(cnt)
                     aspect_ratio = float(w) / h
                     
-                    if 0.2 <= aspect_ratio <= 5.0:  # Aceita formas bem alongadas
+                    if 0.3 <= aspect_ratio <= 5.0:  # Aceita formas bem alongadas
                         # Calcular centro
                         M = cv2.moments(cnt)
                         if M["m00"] != 0:
@@ -528,11 +670,11 @@ def detectar_respostas_52_questoes(image_path, debug=False, eh_gabarito=False):
                                 aceita = False
                                 
                                 # 1) Marcação escura com preenchimento mínimo
-                                if intensidade_media < 20 and percentual_preenchimento > 0.2:
+                                if intensidade_media < 40 and percentual_preenchimento > 0.15:
                                     aceita = True
                                 
                                 # 2) Contornos circulares pouco preenchidos
-                                elif circularity > 0.3 and 0.1 <= percentual_preenchimento <= 0.9 and intensidade_media < intensity_max + 20:
+                                elif circularity > 0.15 and 0.08 <= percentual_preenchimento <= 0.95 and intensidade_media < intensity_max + 30:
                                     aceita = True
                                 
                                 # 3) Marcação grande/grossa
@@ -556,7 +698,7 @@ def detectar_respostas_52_questoes(image_path, debug=False, eh_gabarito=False):
     xs = np.array([b[0] for b in bolhas_pintadas], dtype=np.float32).reshape(-1, 1)
 
     # 2) Determinar número de colunas baseado no número de bolhas
-    num_colunas = min(4, max(1, len(bolhas_pintadas) // 3))  # Pelo menos 3 bolhas por coluna
+    num_colunas = 4  # Pelo menos 3 bolhas por coluna
     
     if num_colunas < 4:
         print(f"⚠️ Detectadas apenas {num_colunas} colunas possíveis. Processamento simplificado.")
@@ -577,7 +719,7 @@ def detectar_respostas_52_questoes(image_path, debug=False, eh_gabarito=False):
             bolhas_por_coluna[remap[int(c_orig)]].append(bolha)
 
     # 4) Para CADA coluna, processar as questões
-    letras = ['A', 'B', 'C', 'D']
+    letras = ['a', 'b', 'c', 'd']
     respostas_finais = ['?'] * 52
 
     for col_idx, bolhas_coluna in enumerate(bolhas_por_coluna):
@@ -587,9 +729,42 @@ def detectar_respostas_52_questoes(image_path, debug=False, eh_gabarito=False):
         # Se há bolhas suficientes na coluna, tentar detectar alternativas A-D
         if len(bolhas_coluna) >= 4:
             xs_col = np.array([b[0] for b in bolhas_coluna], dtype=np.float32).reshape(-1, 1)
-            num_alternativas = min(4, len(bolhas_coluna))
-            k_opts = KMeans(n_clusters=num_alternativas, n_init=10, random_state=0).fit(xs_col)
+            # Sempre usar 4 clusters para as 4 alternativas (A, B, C, D)
+            k_opts = KMeans(n_clusters=4, n_init=10, random_state=0).fit(xs_col)
             centros_opts = k_opts.cluster_centers_.flatten()
+            
+            # 🔧 VALIDAÇÃO: Verificar se há centros duplicados ou muito próximos
+            centros_ordenados_temp = sorted(centros_opts)
+            tem_duplicados = False
+            for i in range(len(centros_ordenados_temp) - 1):
+                distancia = abs(centros_ordenados_temp[i+1] - centros_ordenados_temp[i])
+                if distancia < 5:  # Se distância < 5 pixels, consideramos duplicado
+                    tem_duplicados = True
+                    break
+            
+            if tem_duplicados:
+                # FALLBACK: Usar ordenação direta das posições X únicas
+                xs_unicos = sorted(list(set([b[0] for b in bolhas_coluna])))
+                if len(xs_unicos) >= 4:
+                    # Agrupar posições próximas (< 15px) e usar mediana
+                    grupos = []
+                    for x in xs_unicos:
+                        if not grupos or abs(x - np.median(grupos[-1])) > 15:
+                            grupos.append([x])
+                        else:
+                            grupos[-1].append(x)
+                    
+                    # Verificar se conseguimos 4 grupos
+                    if len(grupos) >= 4:
+                        # Pegar mediana de cada grupo
+                        centros_opts = np.array([np.median(g) for g in grupos[:4]], dtype=np.float32)
+                    else:
+                        # FALLBACK DO FALLBACK: Dividir espaço igualmente
+                        x_min = min(xs_unicos)
+                        x_max = max(xs_unicos)
+                        espacamento = (x_max - x_min) / 3
+                        centros_opts = np.array([x_min, x_min + espacamento, x_min + 2*espacamento, x_max], dtype=np.float32)
+            
             ordem_opts = np.argsort(centros_opts)  # esquerda→direita ⇒ A,B,C,D
         else:
             # Processamento simplificado se há poucas bolhas
@@ -599,7 +774,7 @@ def detectar_respostas_52_questoes(image_path, debug=False, eh_gabarito=False):
         # Agrupe por LINHAS usando tolerância mais flexível
         ys = sorted([b[1] for b in bolhas_coluna])
         dy = np.median(np.diff(ys)) if len(ys) > 5 else 25  # Espaçamento base maior
-        tolerance_y = max(18, int(dy * 0.7))  # 70% do espaçamento (mais tolerante)
+        tolerance_y = max(18, int(dy * 0.5))
 
         linhas = []
         for bolha in sorted(bolhas_coluna, key=lambda b: b[1]):  # por Y
@@ -623,9 +798,17 @@ def detectar_respostas_52_questoes(image_path, debug=False, eh_gabarito=False):
             y_min = min(linha[0][1] for linha in linhas)
             y_max = max(linha[0][1] for linha in linhas)
             altura_total = y_max - y_min
-            espacamento_questao = altura_total / 12 if len(linhas) > 1 else 25  # 12 intervalos para 13 questões
+            espacamento_questao = altura_total / 12 if len(linhas) > 1 else 25
         else:
             continue
+        
+        # AJUSTE ESPECÍFICO PARA COLUNA 3 (índice 2)
+        if col_idx == 2:
+            tolerancia_multiplicador = 2.5  # Muito mais flexível para coluna 3
+            if debug:
+                print(f"🔧 Coluna 3: Usando tolerância aumentada ({tolerancia_multiplicador}x)")
+        else:
+            tolerancia_multiplicador = 1.5
             
         # Para cada questão (0-12) na coluna
         num_questoes = min(13, 52 - offset_questao)  # Não exceder 52 questões total
@@ -643,6 +826,9 @@ def detectar_respostas_52_questoes(image_path, debug=False, eh_gabarito=False):
             linha_mais_proxima_idx = -1
             menor_distancia = float('inf')
             
+            # TOLERÂNCIA AJUSTADA
+            tolerancia = espacamento_questao * tolerancia_multiplicador
+            
             for idx, linha in enumerate(linhas):
                 if idx in linhas_usadas:  # Pular linhas já usadas
                     continue
@@ -651,7 +837,7 @@ def detectar_respostas_52_questoes(image_path, debug=False, eh_gabarito=False):
                 distancia = abs(y_linha - y_esperado)
                 
                 # Tolerância: aceitar linha se estiver dentro de uma janela mais ampla
-                if distancia < espacamento_questao * 1.5 and distancia < menor_distancia:
+                if distancia < tolerancia and distancia < menor_distancia:
                     menor_distancia = distancia
                     linha_mais_proxima = linha
                     linha_mais_proxima_idx = idx
@@ -660,29 +846,98 @@ def detectar_respostas_52_questoes(image_path, debug=False, eh_gabarito=False):
                 # Marcar linha como usada
                 linhas_usadas.add(linha_mais_proxima_idx)
                 
-                # Escolha a bolha mais "preta" da linha
-                bolha_marcada = min(linha_mais_proxima, key=lambda b: b[3] - (b[6] * 40))
-
-                # Descobrir a ALTERNATIVA pela posição X (SIMPLIFICADO E CORRIGIDO)
-                cx = bolha_marcada[0]
+                # 🔍 DETECÇÃO DE DUPLA MARCAÇÃO
+                # Threshold: intensidade abaixo de 50 = marcada
+                threshold_marcada = 50
+                bolhas_marcadas = [b for b in linha_mais_proxima if b[3] < threshold_marcada]
                 
-                # Mapear posição X para letra A, B, C ou D
-                if len(centros_opts) >= 4:
-                    # Encontrar qual cluster (coluna de alternativa) esta bolha pertence
-                    distancias_x = [abs(cx - centros_opts[i]) for i in range(len(centros_opts))]
-                    idx_centro_mais_proximo = np.argmin(distancias_x)
+                letra = '?'
+                
+                if len(bolhas_marcadas) == 0:
+                    # Nenhuma bolha marcada (todas muito claras)
+                    # TENTATIVA DE RECUPERAÇÃO: Pegar a bolha mais escura se estiver razoável
+                    bolha_mais_escura = min(linha_mais_proxima, key=lambda b: b[3])
                     
-                    # ordem_opts contém os índices ordenados de esquerda→direita
-                    letra_idx = int(np.where(ordem_opts == idx_centro_mais_proximo)[0][0])
+                    # Para coluna 3, ser mais permissivo na recuperação
+                    threshold_recuperacao = 85 if col_idx != 2 else 95
                     
-                    if 0 <= letra_idx < len(letras):
-                        letra = letras[letra_idx]
+                    if bolha_mais_escura[3] < threshold_recuperacao:
+                        # Verificar se há diferença clara entre a mais escura e as outras
+                        segunda_mais_escura = sorted(linha_mais_proxima, key=lambda b: b[3])[1] if len(linha_mais_proxima) > 1 else None
+                        
+                        if segunda_mais_escura and (segunda_mais_escura[3] - bolha_mais_escura[3]) > 30:
+                            bolhas_marcadas = [bolha_mais_escura]
+                            if debug and col_idx == 2:
+                                print(f"♻️ Q{q+1} (Col 3): Marcação fraca recuperada (int={bolha_mais_escura[3]:.1f})")
+                        else:
+                            letra = '?'
                     else:
                         letra = '?'
-                else:
+                
+                if len(bolhas_marcadas) >= 2:
+                    # ❌ DUPLA MARCAÇÃO DETECTADA - ANULAR QUESTÃO
                     letra = '?'
+                    if eh_gabarito:
+                        print(f"⚠️ GABARITO Q{q+1}: DUPLA MARCAÇÃO detectada! Questão ANULADA")
+                
+                elif len(bolhas_marcadas) == 1 and letra == '?':
+                    # ✅ UMA marcação (correto!)
+                    bolha_marcada = bolhas_marcadas[0]
+                    
+                    # 🎯 DETECÇÃO POR ZONAS (Método Melhorado)
+                    cx = bolha_marcada[0]  # Posição X da bolha marcada
+                    
+                    # Se há alternativas suficientes detectadas
+                    if len(centros_opts) >= 4:
+                        # Ordenar centros da esquerda → direita
+                        centros_ordenados = sorted(centros_opts)
+                        
+                        # Calcular ZONAS DE TOLERÂNCIA entre cada centro
+                        # Zona A: [início, meio entre A e B]
+                        # Zona B: [meio entre A e B, meio entre B e C]
+                        # Zona C: [meio entre B e C, meio entre C e D]
+                        # Zona D: [meio entre C e D, fim]
+                        
+                        zonas = []
+                        for i in range(len(centros_ordenados)):
+                            if i == 0:
+                                # Primeira alternativa (A): desde o início até meio do caminho para B
+                                limite_inferior = 0
+                                limite_superior = (centros_ordenados[0] + centros_ordenados[1]) / 2 if len(centros_ordenados) > 1 else centros_ordenados[0] + 50
+                            elif i == len(centros_ordenados) - 1:
+                                # Última alternativa (D): desde meio do caminho de C até o fim
+                                limite_inferior = (centros_ordenados[i-1] + centros_ordenados[i]) / 2
+                                limite_superior = float('inf')
+                            else:
+                                # Alternativas do meio (B, C): entre os meios dos intervalos adjacentes
+                                limite_inferior = (centros_ordenados[i-1] + centros_ordenados[i]) / 2
+                                limite_superior = (centros_ordenados[i] + centros_ordenados[i+1]) / 2
+                            
+                            zonas.append((limite_inferior, limite_superior))
+                        
+                        # Verificar em qual ZONA a bolha marcada está
+                        for idx, (lim_inf, lim_sup) in enumerate(zonas):
+                            if lim_inf <= cx < lim_sup:
+                                # Encontrou a zona! Mapear para letra
+                                # Encontrar qual índice original este centro ordenado tinha
+                                centro_original_idx = np.where(centros_opts == centros_ordenados[idx])[0][0]
+                                letra_idx = int(np.where(ordem_opts == centro_original_idx)[0][0])
+                                
+                                if 0 <= letra_idx < len(letras):
+                                    letra = letras[letra_idx]
+                                    if debug and col_idx == 2 and q in [28, 29, 30, 31, 34, 35, 36, 38]:
+                                        print(f"✅ Q{q+1} (Col 3): Detectado '{letra}' (cx={cx:.1f}, zona {idx})")
+                                break
+            else:
+                # NÃO ENCONTROU LINHA PRÓXIMA
+                letra = '?'
+                if debug and col_idx == 2:
+                    print(f"⚠️ Q{q+1} (Col 3): Linha não encontrada (y_esperado={y_esperado:.1f}, tolerancia={tolerancia:.1f})")
+                    linhas_disponiveis = [linha[0][1] for idx, linha in enumerate(linhas) if idx not in linhas_usadas]
+                    if linhas_disponiveis:
+                        print(f"   Linhas disponíveis: {linhas_disponiveis[:5]}")
 
-                respostas_finais[q] = letra
+            respostas_finais[q] = letra
     
     return respostas_finais
 
@@ -705,7 +960,7 @@ def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
         crop = img_cv[int(height*0.60):int(height*0.92), int(width*0.02):int(width*0.98)]
     else:
         # ALUNOS: Crop mais amplo (marcações manuais podem variar)
-        crop = img_cv[int(height*0.58):int(height*0.89), int(width*0.02):int(width*0.98)]
+        crop = img_cv[int(height*0.60):int(height*0.92), int(width*0.02):int(width*0.98)]
     
     # Converter para escala de cinza
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
@@ -714,7 +969,7 @@ def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
     blur = cv2.GaussianBlur(gray, (3, 3), 0)
     
     # FOCO: Threshold MUITO restritivo para detectar APENAS marcações PRETAS
-    _, thresh = cv2.threshold(blur, 30, 155, cv2.THRESH_BINARY_INV) 
+    _, thresh = cv2.threshold(blur, 40, 200, cv2.THRESH_BINARY_INV) 
     
     # Operações morfológicas para preencher bolhas
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -730,14 +985,14 @@ def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
         area = cv2.contourArea(cnt)
         
         # PARÂMETROS MENOS RIGOROSOS - Detecta mais bolhas
-        if 150 < area < 800:
+        if 80 < area < 1500:
             # Verificar se tem formato aproximadamente circular/oval (bem flexível)
             perimeter = cv2.arcLength(cnt, True)
             if perimeter > 0:
                 circularity = 4 * np.pi * area / (perimeter * perimeter)
                 
                 # CIRCULARIDADE BEM FLEXÍVEL - Aceita formas irregulares
-                if circularity > 0.25:
+                if circularity > 0.18:
                     # Verificar aspect ratio bem flexível
                     x, y, w, h = cv2.boundingRect(cnt)
                     aspect_ratio = float(w) / h
@@ -779,7 +1034,6 @@ def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
                                 
                                 if aceita:
                                     bolhas_pintadas.append((cx, cy, cnt, intensidade_media, area, circularity, percentual_preenchimento))
-    
     if debug:
         salvar_debug_deteccao(image_path, bolhas_pintadas, crop)
     
@@ -808,7 +1062,7 @@ def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
             bolhas_por_coluna[remap[int(c_orig)]].append(bolha)
 
     # Para CADA coluna, processar as questões
-    letras = ['A', 'B', 'C', 'D']
+    letras = ['a', 'b', 'c', 'd']
     respostas_finais = ['?'] * 44
 
     for col_idx, bolhas_coluna in enumerate(bolhas_por_coluna):
@@ -818,9 +1072,42 @@ def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
         # Se há bolhas suficientes na coluna, tentar detectar alternativas A-D
         if len(bolhas_coluna) >= 4:
             xs_col = np.array([b[0] for b in bolhas_coluna], dtype=np.float32).reshape(-1, 1)
-            num_alternativas = min(4, len(bolhas_coluna))
-            k_opts = KMeans(n_clusters=num_alternativas, n_init=10, random_state=0).fit(xs_col)
+            # Sempre usar 4 clusters para as 4 alternativas (A, B, C, D)
+            k_opts = KMeans(n_clusters=4, n_init=10, random_state=0).fit(xs_col)
             centros_opts = k_opts.cluster_centers_.flatten()
+            
+            # 🔧 VALIDAÇÃO: Verificar se há centros duplicados ou muito próximos
+            centros_ordenados_temp = sorted(centros_opts)
+            tem_duplicados = False
+            for i in range(len(centros_ordenados_temp) - 1):
+                distancia = abs(centros_ordenados_temp[i+1] - centros_ordenados_temp[i])
+                if distancia < 5:  # Se distância < 5 pixels, consideramos duplicado
+                    tem_duplicados = True
+                    break
+            
+            if tem_duplicados:
+                # FALLBACK: Usar ordenação direta das posições X únicas
+                xs_unicos = sorted(list(set([b[0] for b in bolhas_coluna])))
+                if len(xs_unicos) >= 4:
+                    # Agrupar posições próximas (< 15px) e usar mediana
+                    grupos = []
+                    for x in xs_unicos:
+                        if not grupos or abs(x - np.median(grupos[-1])) > 15:
+                            grupos.append([x])
+                        else:
+                            grupos[-1].append(x)
+                    
+                    # Verificar se conseguimos 4 grupos
+                    if len(grupos) >= 4:
+                        # Pegar mediana de cada grupo
+                        centros_opts = np.array([np.median(g) for g in grupos[:4]], dtype=np.float32)
+                    else:
+                        # FALLBACK DO FALLBACK: Dividir espaço igualmente
+                        x_min = min(xs_unicos)
+                        x_max = max(xs_unicos)
+                        espacamento = (x_max - x_min) / 3
+                        centros_opts = np.array([x_min, x_min + espacamento, x_min + 2*espacamento, x_max], dtype=np.float32)
+            
             ordem_opts = np.argsort(centros_opts)
         else:
             ordem_opts = list(range(len(bolhas_coluna)))
@@ -829,7 +1116,7 @@ def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
         # Agrupe por LINHAS
         ys = sorted([b[1] for b in bolhas_coluna])
         dy = np.median(np.diff(ys)) if len(ys) > 5 else 25
-        tolerance_y = max(18, int(dy * 0.7))
+        tolerance_y = max(18, int(dy * 0.5))
 
         linhas = []
         for bolha in sorted(bolhas_coluna, key=lambda b: b[1]):
@@ -852,6 +1139,22 @@ def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
             espacamento_questao = altura_total / 10 if len(linhas) > 1 else 25  # 10 intervalos para 11 questões
         else:
             continue
+        
+        # AJUSTE ESPECÍFICO PARA COLUNA 3 (índice 2)
+        if col_idx == 0:
+            tolerancia_multiplicador = 2.5  
+        else:
+            tolerancia_multiplicador = 1.5
+
+        if col_idx == 1:
+            tolerancia_multiplicador = 2.5  
+        else:
+            tolerancia_multiplicador = 1.5
+
+        if col_idx == 2:
+            tolerancia_multiplicador = 2.5
+        else:
+            tolerancia_multiplicador = 1.5
             
         # Para cada questão (0-10) na coluna
         num_questoes = min(11, 44 - offset_questao)
@@ -867,6 +1170,9 @@ def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
             linha_mais_proxima_idx = -1
             menor_distancia = float('inf')
             
+            # TOLERÂNCIA AJUSTADA
+            tolerancia = espacamento_questao * tolerancia_multiplicador
+            
             for idx, linha in enumerate(linhas):
                 if idx in linhas_usadas:
                     continue
@@ -874,7 +1180,7 @@ def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
                 y_linha = linha[0][1]
                 distancia = abs(y_linha - y_esperado)
                 
-                if distancia < espacamento_questao * 1.5 and distancia < menor_distancia:
+                if distancia < tolerancia and distancia < menor_distancia:
                     menor_distancia = distancia
                     linha_mais_proxima = linha
                     linha_mais_proxima_idx = idx
@@ -882,272 +1188,95 @@ def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
             if linha_mais_proxima is not None:
                 linhas_usadas.add(linha_mais_proxima_idx)
                 
-                # Escolha a bolha mais "preta" da linha
-                bolha_marcada = min(linha_mais_proxima, key=lambda b: b[3] - (b[6] * 40))
-
-                cx = bolha_marcada[0]
+                # 🔍 DETECÇÃO DE DUPLA MARCAÇÃO
+                # Threshold: intensidade abaixo de 70 = marcada
+                threshold_marcada = 70
+                bolhas_marcadas = [b for b in linha_mais_proxima if b[3] < threshold_marcada]
                 
-                # Mapear posição X para letra A, B, C ou D
-                if len(centros_opts) >= 4:
-                    distancias_x = [abs(cx - centros_opts[i]) for i in range(len(centros_opts))]
-                    idx_centro_mais_proximo = np.argmin(distancias_x)
-                    letra_idx = int(np.where(ordem_opts == idx_centro_mais_proximo)[0][0])
+                letra = '?'
+                
+                if len(bolhas_marcadas) == 0:
+                    # Nenhuma bolha marcada (todas muito claras)
+                    # TENTATIVA DE RECUPERAÇÃO: Pegar a bolha mais escura se estiver razoável
+                    bolha_mais_escura = min(linha_mais_proxima, key=lambda b: b[3])
                     
-                    if 0 <= letra_idx < len(letras):
-                        letra = letras[letra_idx]
+                    # Para coluna 3, ser mais permissivo na recuperação
+                    threshold_recuperacao = 95 if col_idx != 2 else 105
+                    
+                    if bolha_mais_escura[3] < threshold_recuperacao:
+                        # Verificar se há diferença clara entre a mais escura e as outras
+                        segunda_mais_escura = sorted(linha_mais_proxima, key=lambda b: b[3])[1] if len(linha_mais_proxima) > 1 else None
+                        
+                        if segunda_mais_escura and (segunda_mais_escura[3] - bolha_mais_escura[3]) > 30:
+                            bolhas_marcadas = [bolha_mais_escura]
+                            if debug and col_idx == 2:
+                                print(f"♻️ Q{q+1} (Col 3-44Q): Marcação fraca recuperada (int={bolha_mais_escura[3]:.1f})")
+                        else:
+                            letra = '?'
                     else:
                         letra = '?'
-                else:
+                
+                if len(bolhas_marcadas) >= 2:
+                    # ❌ DUPLA MARCAÇÃO DETECTADA - ANULAR QUESTÃO
                     letra = '?'
-
-                respostas_finais[q] = letra
-    
-    return respostas_finais
-    """
-    OMR: Detecta APENAS alternativas pintadas usando OpenCV para cartões com 44 questões
-    Versão aprimorada para lidar com PDFs convertidos
-    Layout: 4 colunas x 11 linhas = 44 questões
-    
-    Args:
-        image_path: Caminho da imagem
-        debug: Se deve mostrar informações de debug
-        eh_gabarito: Se True, usa crop otimizado para gabaritos (impressão limpa)
-    """
-    img_cv = cv2.imread(image_path)
-    height, width = img_cv.shape[:2]
-    
-    # CROPS ESPECÍFICOS PARA CARTÕES DE 44 QUESTÕES
-    if eh_gabarito:
-        # GABARITO: Crop mais centralizado (impressão limpa e consistente)
-        # Altura: 64% a 91% (mais restrito, gabaritos têm layout preciso)
-        # Largura: 4% a 96% (margens maiores, área bem definida)
-        crop = img_cv[int(height*0.62):int(height*0.92), int(width*0.02):int(width*0.98)]
-    else:
-        # ALUNOS: Crop mais amplo (marcações manuais podem variar)
-        # Altura: 62% a 93% (mais tolerante para capturar marcações em diferentes posições)
-        # Largura: 2% a 98% (margens mínimas para não perder marcações nas bordas)
-        crop = img_cv[int(height*0.60):int(height*0.89), int(width*0.02):int(width*0.98)]
-    
-    # Converter para escala de cinza
-    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    
-    # Aplicar filtro suave
-    blur = cv2.GaussianBlur(gray, (3, 3), 0)
-    
-    # FOCO: Threshold MUITO restritivo para detectar APENAS marcações PRETAS
-    _, thresh = cv2.threshold(blur, 30, 155, cv2.THRESH_BINARY_INV) 
-    
-    # Operações morfológicas para preencher bolhas
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-    
-    # Encontrar contornos
-    contornos, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    bolhas_pintadas = []
-    
-    for cnt in contornos:
-        area = cv2.contourArea(cnt)
-        
-        # PARÂMETROS MENOS RIGOROSOS - Detecta mais bolhas
-        if 80 < area < 1500:  # ↓ Mínimo 80 (era 150), ↑ Máximo 1500 (era 800)
-            # Verificar se tem formato aproximadamente circular/oval (bem flexível)
-            perimeter = cv2.arcLength(cnt, True)
-            if perimeter > 0:
-                circularity = 4 * np.pi * area / (perimeter * perimeter)
+                    if eh_gabarito:
+                        print(f"⚠️ GABARITO Q{q+1}: DUPLA MARCAÇÃO detectada! Questão ANULADA")
                 
-                # CIRCULARIDADE BEM FLEXÍVEL - Aceita formas irregulares
-                if circularity > 0.10:  # ↓ 0.10 (era 0.25) - MUITO MAIS FLEXÍVEL
-                    # Verificar aspect ratio bem flexível
-                    x, y, w, h = cv2.boundingRect(cnt)
-                    aspect_ratio = float(w) / h
+                elif len(bolhas_marcadas) == 1 and letra == '?':
+                    # ✅ UMA marcação (correto!)
+                    bolha_marcada = bolhas_marcadas[0]
                     
-                    if 0.2 <= aspect_ratio <= 5.0:  # Aceita formas bem alongadas
-                        # Calcular centro
-                        M = cv2.moments(cnt)
-                        if M["m00"] != 0:
-                            cx = int(M["m10"] / M["m00"])
-                            cy = int(M["m01"] / M["m00"])
+                    # 🎯 DETECÇÃO POR ZONAS (Método Melhorado)
+                    cx = bolha_marcada[0]  # Posição X da bolha marcada
+                    
+                    # Se há alternativas suficientes detectadas
+                    if len(centros_opts) >= 4:
+                        # Ordenar centros da esquerda → direita
+                        centros_ordenados = sorted(centros_opts)
+                        
+                        # Calcular ZONAS DE TOLERÂNCIA entre cada centro
+                        zonas = []
+                        for i in range(len(centros_ordenados)):
+                            if i == 0:
+                                # Primeira alternativa (A): desde o início até meio do caminho para B
+                                limite_inferior = 0
+                                limite_superior = (centros_ordenados[0] + centros_ordenados[1]) / 2 if len(centros_ordenados) > 1 else centros_ordenados[0] + 50
+                            elif i == len(centros_ordenados) - 1:
+                                # Última alternativa (D): desde meio do caminho de C até o fim
+                                limite_inferior = (centros_ordenados[i-1] + centros_ordenados[i]) / 2
+                                limite_superior = float('inf')
+                            else:
+                                # Alternativas do meio (B, C): entre os meios dos intervalos adjacentes
+                                limite_inferior = (centros_ordenados[i-1] + centros_ordenados[i]) / 2
+                                limite_superior = (centros_ordenados[i] + centros_ordenados[i+1]) / 2
                             
-                            # Verificar se está na região das questões
-                            crop_height, crop_width = crop.shape[:2]
-                            if (20 < cx < crop_width - 20 and 20 < cy < crop_height - 20):
+                            zonas.append((limite_inferior, limite_superior))
+                        
+                        # Verificar em qual ZONA a bolha marcada está
+                        for idx, (lim_inf, lim_sup) in enumerate(zonas):
+                            if lim_inf <= cx < lim_sup:
+                                # Encontrou a zona! Mapear para letra
+                                centro_original_idx = np.where(centros_opts == centros_ordenados[idx])[0][0]
+                                letra_idx = int(np.where(ordem_opts == centro_original_idx)[0][0])
                                 
-                                # MELHORIA: Verificar densidade de pixels escuros na bolha
-                                mask = np.zeros(gray.shape, dtype=np.uint8)
-                                cv2.drawContours(mask, [cnt], -1, 255, -1)
-                                intensidade_media = cv2.mean(gray, mask=mask)[0]
-                                
-                                # Calcular percentual de pixels escuros na bolha
-                                pixels_escuros = cv2.countNonZero(cv2.bitwise_and(thresh, mask))
-                                percentual_preenchimento = pixels_escuros / area
-                                
-                                # CRITÉRIOS MENOS RIGOROSOS - Aceita mais marcações
-                                aceita = False
-                                
-                                # 1) Marcação escura com preenchimento mínimo
-                                if intensidade_media < 60 and percentual_preenchimento > 0.20:  # ↑ intensidade 60 (era 35), ↓ preench 20% (era 50%)
-                                    aceita = True
-                                
-                                # 2) Contornos circulares pouco preenchidos
-                                elif circularity > 0.15 and 0.10 <= percentual_preenchimento <= 0.90 and intensidade_media < 80:  # Muito mais tolerante
-                                    aceita = True
-                                
-                                # 3) Marcação grande/grossa
-                                elif area > 120 and intensidade_media < 90 and percentual_preenchimento > 0.10:  # Bem flexível
-                                    aceita = True
-                                
-                                if aceita:
-                                    bolhas_pintadas.append((cx, cy, cnt, intensidade_media, area, circularity, percentual_preenchimento))
-    
-    if debug:
-        salvar_debug_deteccao(image_path, bolhas_pintadas, crop)
-    
-    # Verificar se temos bolhas suficientes para processamento
-    if len(bolhas_pintadas) < 4:
-        print(f"⚠️ Poucas bolhas detectadas ({len(bolhas_pintadas)}). Retornando lista vazia.")
-        return ['?'] * 44
-    
-    # MELHORIA: Organização mais precisa usando KMeans para detectar as 4 colunas
-    
-    # 1) Após montar bolhas_pintadas, separe só os 'cx' (centros X)
-    xs = np.array([b[0] for b in bolhas_pintadas], dtype=np.float32).reshape(-1, 1)
-
-    # 2) Determinar número de colunas baseado no número de bolhas
-    num_colunas = min(4, max(1, len(bolhas_pintadas) // 3))  # Pelo menos 3 bolhas por coluna
-    
-    if num_colunas < 4:
-        print(f"⚠️ Detectadas apenas {num_colunas} colunas possíveis. Processamento simplificado.")
-    
-    # 3) Descubra as BANDAS VERTICAIS (colunas de questões) via KMeans
-    k_cols = KMeans(n_clusters=num_colunas, n_init=10, random_state=0).fit(xs)
-    col_idx_por_bolha = k_cols.predict(xs)
-    centros_cols = sorted(k_cols.cluster_centers_.flatten())  # esquerda→direita
-
-    # Mapeie cada bolha para a coluna correta usando a ordem dos centros
-    # (reindexar para 0..num_colunas-1 na ordem esquerda→direita)
-    ordem_cols = np.argsort(k_cols.cluster_centers_.flatten())
-    remap = {int(c): i for i, c in enumerate(ordem_cols)}
-
-    bolhas_por_coluna = [[] for _ in range(num_colunas)]
-    for bolha, c_orig in zip(bolhas_pintadas, col_idx_por_bolha):
-        if remap[int(c_orig)] < num_colunas:
-            bolhas_por_coluna[remap[int(c_orig)]].append(bolha)
-
-    # 4) Para CADA coluna, processar as questões
-    letras = ['A', 'B', 'C', 'D']
-    respostas_finais = ['?'] * 44
-
-    for col_idx, bolhas_coluna in enumerate(bolhas_por_coluna):
-        if not bolhas_coluna:
-            continue
-
-        # Se há bolhas suficientes na coluna, tentar detectar alternativas A-D
-        if len(bolhas_coluna) >= 4:
-            xs_col = np.array([b[0] for b in bolhas_coluna], dtype=np.float32).reshape(-1, 1)
-            num_alternativas = min(4, len(bolhas_coluna))
-            k_opts = KMeans(n_clusters=num_alternativas, n_init=10, random_state=0).fit(xs_col)
-            centros_opts = k_opts.cluster_centers_.flatten()
-            ordem_opts = np.argsort(centros_opts)  # esquerda→direita ⇒ A,B,C,D
-        else:
-            # Processamento simplificado se há poucas bolhas
-            ordem_opts = list(range(len(bolhas_coluna)))
-            centros_opts = [b[0] for b in bolhas_coluna]
-
-        # Agrupe por LINHAS usando tolerância mais flexível
-        ys = sorted([b[1] for b in bolhas_coluna])
-        dy = np.median(np.diff(ys)) if len(ys) > 5 else 25  # Espaçamento base maior
-        tolerance_y = max(18, int(dy * 0.7))  # 70% do espaçamento (mais tolerante)
-
-        linhas = []
-        for bolha in sorted(bolhas_coluna, key=lambda b: b[1]):  # por Y
-            cy = bolha[1]
-            if not linhas or abs(cy - linhas[-1][0][1]) > tolerance_y:
-                linhas.append([bolha])
+                                if 0 <= letra_idx < len(letras):
+                                    letra = letras[letra_idx]
+                                    if debug and col_idx == 2:
+                                        print(f"✅ Q{q+1} (Col 3-44Q): Detectado '{letra}' (cx={cx:.1f}, zona {idx})")
+                                break
             else:
-                linhas[-1].append(bolha)
-
-        # Ordene as linhas por Y
-        linhas.sort(key=lambda linha: linha[0][1])
-        
-        # Rastrear linhas usadas com conjunto de índices
-        linhas_usadas = set()
-
-        # Cada coluna tem 11 questões para 44 questões - MAPEAMENTO CORRETO
-        offset_questao = col_idx * 11
-        
-        # Calcular as posições Y esperadas das 11 questões na coluna
-        if linhas:
-            y_min = min(linha[0][1] for linha in linhas)
-            y_max = max(linha[0][1] for linha in linhas)
-            altura_total = y_max - y_min
-            espacamento_questao = altura_total / 10 if len(linhas) > 1 else 25  # 10 intervalos para 11 questões
-        else:
-            continue
-            
-        # Para cada questão (0-10) na coluna
-        num_questoes = min(11, 44 - offset_questao)  # Não exceder 44 questões total
-        
-        for questao_idx in range(num_questoes):
-            q = offset_questao + questao_idx
-            if q >= 44:
-                break
-                
-            # Calcular posição Y esperada desta questão
-            y_esperado = y_min + (questao_idx * espacamento_questao)
-            
-            # Encontrar a linha mais próxima desta posição Y
-            linha_mais_proxima = None
-            linha_mais_proxima_idx = -1
-            menor_distancia = float('inf')
-            
-            for idx, linha in enumerate(linhas):
-                if idx in linhas_usadas:  # Pular linhas já usadas
-                    continue
-                    
-                y_linha = linha[0][1]  # Y da primeira bolha da linha
-                distancia = abs(y_linha - y_esperado)
-                
-                # Tolerância: aceitar linha se estiver dentro de uma janela mais ampla
-                if distancia < espacamento_questao * 1.5 and distancia < menor_distancia:
-                    menor_distancia = distancia
-                    linha_mais_proxima = linha
-                    linha_mais_proxima_idx = idx
-            
-            if linha_mais_proxima is not None:
-                # Marcar linha como usada
-                linhas_usadas.add(linha_mais_proxima_idx)
-                
-                # 🔧 VALIDAÇÃO: Verificar se a linha tem pelo menos 4 bolhas (A, B, C, D)
-                if len(linha_mais_proxima) < 4:
-                    if debug:
-                        print(f"⚠️ Q{q+1}: Linha tem apenas {len(linha_mais_proxima)} bolhas (esperado: 4)")
-                    # Tentar processar mesmo assim, mas marcar como suspeito
-                
-                # Ordenar as bolhas da linha por posição X (esquerda → direita = A, B, C, D)
-                linha_ordenada_x = sorted(linha_mais_proxima, key=lambda b: b[0])
-                
-                # 🔧 CORREÇÃO CRÍTICA: Escolher a bolha MAIS ESCURA (menor intensidade)
-                # Ignorar percentual de preenchimento por enquanto, focar na intensidade
-                bolha_marcada = min(linha_ordenada_x, key=lambda b: b[3])  # b[3] = intensidade média
-                
-                # Encontrar o índice (posição) da bolha marcada na lista ordenada
+                # NÃO ENCONTROU LINHA PRÓXIMA
                 letra = '?'
-                cx_bolha = bolha_marcada[0]
-                cy_bolha = bolha_marcada[1]
-                
-                for idx_x, bolha in enumerate(linha_ordenada_x):
-                    # Verificar se é a mesma bolha (comparar posição X e Y)
-                    if abs(bolha[0] - cx_bolha) < 5 and abs(bolha[1] - cy_bolha) < 5:
-                        if 0 <= idx_x < len(letras):
-                            letra = letras[idx_x]
-                        break
+                if debug and col_idx == 2:
+                    print(f"⚠️ Q{q+1} (Col 3-44Q): Linha não encontrada (y_esperado={y_esperado:.1f}, tolerancia={tolerancia:.1f})")
+                    linhas_disponiveis = [linha[0][1] for idx, linha in enumerate(linhas) if idx not in linhas_usadas]
+                    if linhas_disponiveis:
+                        print(f"   Linhas disponíveis: {linhas_disponiveis[:5]}")
 
-                respostas_finais[q] = letra
+            respostas_finais[q] = letra
     
     return respostas_finais
-
+   
 
 
 def detectar_respostas_universal(image_path, debug=False):
@@ -1184,7 +1313,7 @@ def detectar_respostas_universal(image_path, debug=False):
     num_bolhas = 0
     for cnt in contornos:
         area = cv2.contourArea(cnt)
-        if 80 < area < 1500:  # ↓ Mínimo 80 (era 150), ↑ Máximo 1500 (era 800)
+        if 80 < area < 1500:
             perimeter = cv2.arcLength(cnt, True)
             if perimeter > 0:
                 circularity = 4 * np.pi * area / (perimeter * perimeter)
@@ -1535,7 +1664,7 @@ def configurar_google_drive_service_completo():
 def encontrar_ou_criar_pasta_processados(service, pasta_origem_id: str) -> str:
     """Usa a pasta 'cartoes-processados' específica no Google Drive."""
     pasta_processados_id = "1fVFfewF2qUe-wgORQ5p15on5apOQ2G_i"
-    
+
     try:
         # Verificar se a pasta existe e é acessível
         pasta_info = service.files().get(fileId=pasta_processados_id, fields='id, name').execute()
@@ -1975,8 +2104,10 @@ def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=
     """Envia dados para Google Sheets"""
 
     try:
-        # 👉 Determinar número total de questões
-        total_questoes = resultado_comparacao.get("acertos", 0) + resultado_comparacao.get("erros", 0)
+        # 👉 Determinar número total de questões (incluindo anuladas)
+        total_questoes = resultado_comparacao.get("total", 0)
+        questoes_validas = resultado_comparacao.get("questoes_validas", total_questoes)
+        anuladas = resultado_comparacao.get("anuladas", 0)
 
         # 👉 Definir IDs fixos das planilhas
         GOOGLE_SHEETS_9ANO = "1VJ0_w9eoQcc-ouBnRoq5lFQdR2fVZkqEtR-KArZMuvk"
@@ -1993,13 +2124,6 @@ def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=
             print(f"⚠️ Número de questões ({total_questoes}) não reconhecido. Registro ignorado.")
             return False
 
-        # 🆕 VALIDAÇÃO: Verificar se o número de questões detectadas é suficiente
-        if questoes_detectadas is not None:
-            if (total_questoes == 44 and questoes_detectadas < 44) or (total_questoes == 52 and questoes_detectadas < 52):
-                print(f"⚠️ ATENÇÃO: Questões detectadas ({questoes_detectadas}) abaixo do esperado ({total_questoes})")
-                print(f"   ❌ Registro NÃO será enviado para a planilha (detecção incompleta)")
-                return False
-
         # 👉 Abrir a planilha correta
         sheet = client.open_by_key(planilha_id)
         worksheet = sheet.sheet1
@@ -2007,7 +2131,7 @@ def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=
         # Verificar se há cabeçalho
         if not worksheet.get_all_values():
             cabecalho = [
-                "Data", "Escola", "Nome completo", "Nascimento", "Turma", "Acertos", "Erros", "Porcentagem"
+                "Data", "Escola", "Nome completo", "Nascimento", "Turma", "Acertos", "Erros", "Anuladas", "Porcentagem"
             ]
             worksheet.append_row(cabecalho)
             print("📋 Cabeçalho criado na planilha")
@@ -2017,19 +2141,19 @@ def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=
         
         # Garantir que os dados estejam no formato correto
         escola = dados_aluno.get("Escola", "N/A")
-        if escola == "N/A" or not escola.strip():
+        if escola == "N/A" or not escola.strip().lower():
             escola = "N/A"
         
         aluno = dados_aluno.get("Aluno", "N/A")
-        if aluno == "N/A" or not aluno.strip():
+        if aluno == "N/A" or not aluno.strip().lower():
             aluno = "N/A"
             
         nascimento = dados_aluno.get("Nascimento", "N/A")
-        if nascimento == "N/A" or not nascimento.strip():
+        if nascimento == "N/A" or not nascimento.strip().lower():
             nascimento = "N/A"
             
         turma = dados_aluno.get("Turma", "N/A")
-        if turma == "N/A" or not turma.strip():
+        if turma == "N/A" or not turma.strip().lower():
             turma = "N/A"
         
         linha_dados = [
@@ -2040,6 +2164,7 @@ def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=
             turma,
             resultado_comparacao["acertos"],
             resultado_comparacao["erros"],
+            resultado_comparacao.get("anuladas", 0),
             f"{resultado_comparacao['percentual']:.1f}%"
         ]
         
@@ -2050,7 +2175,10 @@ def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=
         print(f"   👤 Aluno: {aluno}")
         print(f"   📅 Nascimento: {nascimento}")
         print(f"   📚 Turma: {turma}")
-        print(f"   📊 Resultado: {resultado_comparacao['acertos']} acertos | {resultado_comparacao['erros']} erros | {resultado_comparacao['percentual']:.1f}%")
+        if resultado_comparacao.get("anuladas", 0) > 0:
+            print(f"   📊 Resultado: {resultado_comparacao['acertos']} acertos | {resultado_comparacao['erros']} erros | {resultado_comparacao['anuladas']} anuladas | {resultado_comparacao['percentual']:.1f}%")
+        else:
+            print(f"   📊 Resultado: {resultado_comparacao['acertos']} acertos | {resultado_comparacao['erros']} erros | {resultado_comparacao['percentual']:.1f}%")
         
         return True
         
@@ -2106,12 +2234,25 @@ def comparar_respostas(respostas_gabarito, respostas_aluno):
     
     acertos = 0
     erros = 0
+    anuladas = 0
     detalhes = []
     
     for i in range(min_questoes):
         questao = i + 1
         gabarito = respostas_gabarito[i] if i < len(respostas_gabarito) else "N/A"
         aluno = respostas_aluno[i] if i < len(respostas_aluno) else "N/A"
+        
+        # 🔧 Se gabarito ou aluno tem '?', anular questão (não conta no cálculo)
+        if gabarito == '?' or aluno == '?':
+            status = "⊘"  # Anulada
+            anuladas += 1
+            detalhes.append({
+                "questao": questao,
+                "gabarito": gabarito,
+                "aluno": aluno,
+                "status": "ANULADA"
+            })
+            continue
         
         if gabarito == aluno:
             status = "✓"
@@ -2127,10 +2268,14 @@ def comparar_respostas(respostas_gabarito, respostas_aluno):
             "status": status
         })
     
-    percentual = (acertos / min_questoes * 100) if min_questoes > 0 else 0
+    # Calcular sobre questões válidas (excluindo anuladas)
+    questoes_validas = min_questoes - anuladas
+    percentual = (acertos / questoes_validas * 100) if questoes_validas > 0 else 0
     
     return {
         "total": min_questoes,
+        "questoes_validas": questoes_validas,
+        "anuladas": anuladas,
         "acertos": acertos,
         "erros": erros,
         "percentual": percentual,
@@ -2150,6 +2295,9 @@ def exibir_resultados(dados_aluno, resultado):
     
     print("\n=== RESULTADO GERAL ===")
     print(f"Total de questões: {resultado['total']}")
+    print(f"Questões válidas: {resultado['questoes_validas']}")
+    if resultado.get('anuladas', 0) > 0:
+        print(f"Questões anuladas: {resultado['anuladas']} ⊘")
     print(f"Acertos: {resultado['acertos']} ✓")
     print(f"Erros: {resultado['erros']} ✗")
     print(f"Percentual de acerto: {resultado['percentual']:.2f}%")
@@ -2907,6 +3055,9 @@ def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_ge
         num_questoes_detectadas = len(respostas_gabarito)
         print(f"✅ Gabarito processado: {questoes_gabarito}/{num_questoes_detectadas} questões detectadas")
         
+        # Exibir gabarito em formato simples
+        exibir_gabarito_simples(respostas_gabarito)
+        
         if questoes_gabarito < 40:
             print("⚠️ ATENÇÃO: Poucas questões detectadas no gabarito.")
         
@@ -2972,6 +3123,19 @@ def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_ge
             # Calcular resultado
             resultado = comparar_respostas(respostas_gabarito, respostas_aluno)
             
+            # Exibir resumo formatado
+            print(f"\n{'─'*60}")
+            print(f"👤 {dados_aluno['Aluno']}")
+            print(f"📚 Turma: {dados_aluno['Turma']} | Escola: {dados_aluno['Escola']}")
+            print(f"✅ Acertos: {resultado['acertos']}")
+            print(f"❌ Erros: {resultado['erros']}")
+            print(f"📊 Percentual: {resultado['percentual']:.1f}%")
+            
+            # Exibir respostas do aluno
+            print(f"\n📝 Respostas:")
+            exibir_gabarito_simples(respostas_aluno)
+            print(f"{'─'*60}")
+            
             # Armazenar resultado com dados completos
             resultado_completo = {
                 "arquivo": aluno_file,
@@ -2982,8 +3146,6 @@ def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_ge
                 "questoes_detectadas": questoes_aluno
             }
             resultados_lote.append(resultado_completo)
-            
-            print(f"📊 Resultado: {resultado['acertos']}/{resultado['total']} acertos ({resultado['percentual']:.1f}%)")
             
         except Exception as e:
             print(f"❌ ERRO ao processar {aluno_file}: {e}")
@@ -3252,6 +3414,19 @@ def processar_pasta_gabaritos_com_sheets(
             # Calcular resultado
             resultado = comparar_respostas(respostas_gabarito, respostas_aluno)
             
+            # Exibir resumo formatado
+            print(f"\n{'─'*60}")
+            print(f"👤 {dados_aluno['Aluno']}")
+            print(f"📚 Turma: {dados_aluno['Turma']} | Escola: {dados_aluno['Escola']}")
+            print(f"✅ Acertos: {resultado['acertos']}")
+            print(f"❌ Erros: {resultado['erros']}")
+            print(f"📊 Percentual: {resultado['percentual']:.1f}%")
+            
+            # Exibir respostas do aluno
+            print(f"\n📝 Respostas:")
+            exibir_gabarito_simples(respostas_aluno)
+            print(f"{'─'*60}")
+            
             # Armazenar resultado com dados completos
             resultado_completo = {
                 "arquivo": aluno_file,
@@ -3262,8 +3437,6 @@ def processar_pasta_gabaritos_com_sheets(
                 "questoes_detectadas": questoes_aluno
             }
             resultados_lote.append(resultado_completo)
-            
-            print(f"📊 Resultado: {resultado['acertos']}/{resultado['total']} acertos ({resultado['percentual']:.1f}%)")
             
             # ===========================================
             # ENVIAR PARA GOOGLE SHEETS COM RATE LIMITING
@@ -3859,6 +4032,12 @@ if __name__ == "__main__":
         print("=" * 60)
         print("🤖 MODO MONITORAMENTO CONTÍNUO ATIVADO")
         print(f"⏰ Intervalo: {args.intervalo} minutos")
+        print(f"📂 Pasta de ORIGEM (upload): {pasta_drive_id}")
+        print(f"📁 Pasta de DESTINO (processados): {pasta_destino_id}")
+        if num_questoes == 44:
+            print(f"📚 Tipo: 44 questões → 5º ano")
+        else:
+            print(f"📚 Tipo: 52 questões → 9º ano")
         print("💡 Pressione Ctrl+C para parar")
         print("=" * 60)
         
@@ -4033,7 +4212,10 @@ if __name__ == "__main__":
                             
                             questoes_gabarito = sum(1 for r in respostas_gabarito if r != '?')
                             num_questoes_detectadas = len(respostas_gabarito)
-                            print(f"✅ Gabarito: {questoes_gabarito}/{num_questoes_detectadas} questões")
+                            print(f"✅ Gabarito processado: {questoes_gabarito}/{num_questoes_detectadas} questões detectadas")
+                            
+                            # Exibir gabarito
+                            exibir_gabarito_simples(respostas_gabarito)
                             
                             # 2. Processar cada cartão NOVO (separar PDFs de imagens)
                             ids_processados_agora = []
@@ -4223,7 +4405,19 @@ if __name__ == "__main__":
                                         
                                         # Comparar com gabarito
                                         resultado = comparar_respostas(respostas_gabarito, respostas_aluno)
-                                        print(f"   ✅ {resultado['acertos']}/{resultado['total']} acertos ({resultado['percentual']:.1f}%)")
+                                        
+                                        # Exibir resumo formatado
+                                        print(f"\n{'─'*60}")
+                                        print(f"👤 {dados_aluno.get('aluno', 'N/A')}")
+                                        print(f"📚 Turma: {dados_aluno.get('turma', 'N/A')} | Escola: {dados_aluno.get('escola', 'N/A')}")
+                                        print(f"✅ Acertos: {resultado['acertos']}")
+                                        print(f"❌ Erros: {resultado['erros']}")
+                                        print(f"📊 Percentual: {resultado['percentual']:.1f}%")
+                                        
+                                        # Exibir respostas do aluno
+                                        print(f"\n📝 Respostas:")
+                                        exibir_gabarito_simples(respostas_aluno)
+                                        print(f"{'─'*60}")
                                         
                                         # Enviar para Google Sheets
                                         if client and PLANILHA_ID:
@@ -4241,18 +4435,17 @@ if __name__ == "__main__":
                                     except Exception as e:
                                         print(f"   ❌ Erro: {e}")
                             
-                            # 3. Mover arquivos processados no Drive
+                            # 3. Mover arquivos processados no Drive para pasta correta (5º ou 9º ano)
                             if mover_processados and ids_processados_agora:
-                                print(f"\n📦 Movendo {len(ids_processados_agora)} cartões...")
-                                pasta_processados_id = encontrar_ou_criar_pasta_processados(drive_service, pasta_drive_id)
-                                if pasta_processados_id:
+                                print(f"\n📦 Movendo {len(ids_processados_agora)} cartões para pasta de destino...")
+                                if pasta_destino_id:
                                     for cartao_info in novos_cartoes:
                                         if cartao_info['id'] in ids_processados_agora:
                                             mover_arquivo_no_drive(
                                                 drive_service,
                                                 cartao_info['id'],
                                                 pasta_drive_id,
-                                                pasta_processados_id,
+                                                pasta_destino_id,  # Usa pasta correta (5º ou 9º ano)
                                                 cartao_info['name']
                                             )
                             
@@ -4275,7 +4468,7 @@ if __name__ == "__main__":
                     else:
                         print("� Nenhum cartão para processar")
                     
-                    print(f"⏰ Próxima verificação em {args.intervalo} minutos...")
+                    print(f"⏰ Próxima verificação em {args.intervalo} minuto(s)...")
                     time.sleep(args.intervalo * 60)
                     
                 except KeyboardInterrupt:
@@ -4289,8 +4482,7 @@ if __name__ == "__main__":
                     
         except KeyboardInterrupt:
             print("\n\n🛑 Monitoramento interrompido pelo usuário")
-            print(f"� Total de verificações realizadas: {contador_verificacoes}")
-            print("👋 Até logo!")
+            print(f"Total de verificações realizadas: {contador_verificacoes}")
         
         exit(0)
 

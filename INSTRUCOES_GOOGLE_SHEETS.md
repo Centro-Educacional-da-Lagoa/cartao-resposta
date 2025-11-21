@@ -1,34 +1,23 @@
 # 🚀 INSTRUÇÕES PARA CONFIGURAR GOOGLE SHEETS
 
-## PASSO 1: SUBSTITUIR CREDENCIAIS
-1. Abra o arquivo baixado do Google Cloud Console
-2. Copie todo o conteúdo JSON
-3. Substitua o conteúdo do arquivo 'exemplo_credenciais.json'
-4. Renomeie para 'credenciais_google.json'
 
-## PASSO 2: CRIAR PLANILHA
+## PASSO 1: CRIAR PLANILHA DENTRO DAS SUBPASTAS 5° ANO E 9° ANO
 1. Acesse: https://sheets.google.com
-2. Crie nova planilha com nome: "Correção Cartão Resposta"
+2. Crie as novas planilhas dentro dessas subpastas - O nome é como você quiser
 3. Compartilhe com o email da conta de serviço (encontrado no JSON)
 4. Dê permissão de "Editor"
+5. Agora precisamos pegar o ID da planilha que será utilizada pelas turmas 5° ano e 9° ano para configurar dentro do .env
+6. Acesse a planilha e esse será a URL https://docs.google.com/spreadsheets/d/SEU_ID_AQUI/edit?gid=0#gid=0
+7. Onde está escrito "seu_id_aqui" é uma sequencia de letras e números, esse será seu ID
 
-## PASSO 3: Configurar GOOGLE_SHEETS_ID
-1. Baixe todas as depedências (bibliotecas) do python incluso nesse projeto 
-
-NOTA: Se não fizer isso, o script criará automaticamente!
-
-## PASSO 3: EXECUTAR O SCRIPT
-1. Execute: python script.py
-2. O script irá:
-   ✅ Processar as imagens
-   ✅ Mostrar resultados no terminal
-   ✅ Conectar ao Google Sheets
-   ✅ Enviar dados para planilha
-   ✅ Perguntar se quer criar planilha detalhada
 
 ## ESTRUTURA DA PLANILHA:
-- Data/Hora
-- Escola, Aluno, Nascimento, Turma
-- Total Questões, Acertos, Erros, Percentual
-- Questões Acertadas, Questões Erradas
+```bash
+## 📊 Formato do Google Sheets
+
+| Data/Hora  | Escola | Aluno  | Nascimento | Turma | Acertos | Erros  | Questoes anuladas | Porcentagem |
+|------------|--------|--------|------------|-------|---------|------- |-------------------|-------------|
+| 25/09/2025 |   ABC  | João   | 15/03/2005 |  902  |    42   |    10  |        0          |   80.8%     |
+
+```
 

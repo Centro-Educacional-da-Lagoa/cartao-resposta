@@ -20,7 +20,7 @@
 1. **Processamento**: Extrai respostas usando visão computacional e clustering
 2. **Cabeçalho**: Usa Google Gemini para extrair dados do aluno (nome, escola, turma, nascimento)
 3. **Correção**: Compara respostas do aluno com o gabarito
-4. **Resultados**: Envia automaticamente para Google Sheets com rate limiting
+4. **Resultados**: Envia automaticamente para Google Sheets
 
 ### 1. Clone o repositório
 
@@ -31,7 +31,7 @@ cd cartao-resposta
 
 ### 2. Pré-requisitos para o passo de instalação
 - **Python 3.8+**
-- **Google Cloud APIs** (Sheets + Gemini)
+- **Google Cloud APIs** (Drive, Sheets + Gemini)
 
 ## 🛠️ Instalação
 
@@ -66,20 +66,33 @@ pip install -r requirements.txt
 
 ## ⚙️ Configuração
 
-### 1. Configurar arquivo .env para guardar chaves secretas
+### 1: CONFIGURAR GOOGLE CLOUD, API's, CONTA DE SERVIÇO E ARQUIVO.JSON
+- Acesse https://console.cloud.google.com/
+- Criar um novo projeto
+- Ativar API's do Google Sheets, Google Drive e Gemini for Google Cloud API
+- Criar uma credencial de conta de serviços
+- Marca a caixa do email criado e clicar em "Contas de Serviço"
+- Criar uma nova chave de JSON
+- Irá baixar o arquivo.json, renoemar para credenciais_google.json e colocar dentro da pasta raiz
 
+### 2. Criar o arquivo .env e configurar com os seguintes nomes:
+   GEMINI_API_KEY="Sua_key_aqui"
+   GOOGLE_SHEETS_9ANO="Sua_key_aqui"
+   GOOGLE_SHEETS_5ANO="Sua_key_aqui"
+   DRIVER_FOLDER_ID="Sua_key_aqui"
+   DRIVER_FOLDER_9ANO="Sua_key_aqui"
+   DRIVER_FOLDER_5ANO="Sua_key_aqui"
 - A biblioteca do .env será instalada automaticamente após executar o requirements.txt
-- Dentro do .env defina os nomes das variáveis de ambiente ex: (GEMINI_API_KEY = sua_key_aqui, GOOGLE_SHEETS_ID = "sua_key_aqui", DRIVE_FOLDER_ID = "sua_key_aqui")
 
 
-### 2. Google Sheets API
+
+### 2. Google Drive e Google Sheets API
 
 Siga as instruções em [`INSTRUCOES_GOOGLE_SHEETS.md`](INSTRUCOES_GOOGLE_SHEETS.md) para:
-- Criar projeto no Google Cloud
-- Ativar APIs necessárias  
-- Gerar credenciais de service account
-- Salvar como `credenciais_google.json`
-- Jogar o `credenciais_google.json` dentro da pasta raiz
+- Configurar o Google Drive
+- Configurar as Planilhas
+
+OBS: Verifque o cabeçalho das planilhas, está disponível dentro do README INSTRUCOES_GOOGLE_SHEETS
 
 ### 3. Google Gemini AI
 
@@ -87,52 +100,108 @@ Siga as instruções em [`GEMINI_SETUP.md`](GEMINI_SETUP.md) para:
 - Obter API key do Gemini
 - Configurar na variável de ambiente .env
 
-### 4. Google Drive API
 
-Para baixar os cartões direto do Google Drive:
-- Ative também a **Google Drive API** no mesmo projeto
-- Compartilhe a pasta (ou subpasta) do Drive com o e-mail da service account
-- Copie o **ID da pasta** (ex.: `https://drive.google.com/drive/folders/ID_AQUI`)
-- defina a variável de ambiente `DRIVE_FOLDER_ID` dentro do arquivo .env
+## 📦 Dependências do Sistema
 
-### 5. Criar pastas e planilhas no Google Drive:
+Além das bibliotecas Python (instaladas via `pip install -r requirements.txt`), você precisa instalar:
 
-Crie com essa estrutura:
+### 1. Tesseract OCR (Fallback caso Gemini falhe)
+**Nota:** O sistema usa Gemini AI como método principal. O Tesseract OCR é apenas um fallback automático.
 
-Google Drive
-└── PastA "cartão-resposta" (Pasta raiz)
-├── Pasta "5° ano" (44 questões) (Subpasta)
-│ └── Planilha com informações dos alunos do 5° ano
-├── Pasta "9° ano" (52 questões) (Subpasta)
-│ └── Planilha com informações dos alunos do 9° ano
-└── Arquivo "gabarito" (52 ou 44 questões) Voce precisa ter o gabarito nomeado como gabarito.jpg ou gabarito.png
+#### Windows:
+```bash
+# Via Chocolatey (recomendado)
+choco install tesseract
 
-OBS: Verifque o cabeçalho das planilhasr, está disponível dentro do README INSTRUCOES_GOOGLE_SHEETS
+# OU baixar manualmente:
+# https://github.com/UB-Mannheim/tesseract/wiki
+```
+
+#### Linux (Ubuntu/Debian):
+```bash
+sudo apt-get update
+sudo apt-get install tesseract-ocr tesseract-ocr-por
+```
+
+#### macOS:
+```bash
+brew install tesseract tesseract-lang
+```
+
+### 2. Poppler (Necessário para processar PDFs)
+
+#### Windows:
+```bash
+# Via Chocolatey (recomendado)
+choco install poppler
+
+# Via Scoop (alternativa)
+scoop install poppler
+
+# OU manualmente:
+# 1. Baixe: https://github.com/oschwartz10612/poppler-windows/releases/
+# 2. Extraia para C:\poppler
+# 3. Adicione C:\poppler\Library\bin ao PATH do sistema
+```
+
+#### Linux (Ubuntu/Debian):
+```bash
+sudo apt-get update
+sudo apt-get install poppler-utils
+```
+
+#### macOS:
+```bash
+brew install poppler
+```
+
+### 3. Verificar Instalações
+
+```bash
+# Verificar Poppler
+python -c "from pdf2image import convert_from_path; print('✅ Poppler OK!')"
+
+# Verificar Tesseract (se instalado)
+tesseract --version
+```
+
+### 📝 Notas Importantes
+
+- **Poppler é obrigatório** para processar arquivos PDF
+- **Tesseract é opcional** - usado apenas como fallback se Gemini falhar
+- No Windows, se não tiver Chocolatey ou Scoop, use instalação manual e configure o PATH
+
+
 
 ## 🎮 Como Usar
 
-### Modo Local para ler os cartões disponível na pasta do drive
+### Modo Local para ler de forma única os cartões disponível na pasta do drive
 
 ```bash
 python script.py
 ```
 
-### Modo monitor para ficar verificando a pasta do drive e ler automaticamente quando um novo cartão é adicionado
+### Modo monitor para ler de forma contínua e automática os cartões-resposta dentro da pasta
+
+OBS: No modo Monitor, o sistema cria automaticamente o arquivo historico_monitoramento.json. Nesse arquivo são salvos os IDs de todos os cartões que já foram lidos, garantindo que o bot não leia o mesmo cartão mais de uma vez.
+
+ATENÇÃO: Se você apagar esse arquivo ou o ID, o bot vai considerar que nenhum cartão foi lido ainda, e poderá ler todos novamente.
 
 ```bash
-python script.py -monitor --intervalo 1
+python script.py --monitor --intervalo 1
 ```
 
 
 
-O sistema irá ler automaticamente a pasta `./gabaritos`,
+O sistema irá ler automaticamente a pasta `Cartao-resposta`,
 processar todos os arquivos e enviar para o Google Sheets.
 
 Fluxo completo:
 1. Detectar automaticamente gabarito e alunos
 2. Processar todos os cartões
 3. Enviar resultados para Google Sheets
-4. Mostrar relatório final
+4. Mover os cartões para a pasta de acordo com a série
+5. Mostrar relatório final dentro das planilhas
 
 
 

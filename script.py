@@ -86,28 +86,18 @@ def converter_para_preto_e_branco(image_path: str, threshold: int = 180, salvar:
         Caminho da imagem convertida em preto e branco
     """
     try:
-        # Carregar imagem
         img = cv2.imread(image_path)
         if img is None:
             raise Exception(f"Não foi possível carregar a imagem: {image_path}")
-        # Converter para escala de cinza
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # Aplicar threshold para deixar preto e branco puro
-        # Pixels acima do threshold ficam brancos (255)
-        # Pixels abaixo do threshold ficam pretos (0)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         _, img_pb = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
         
-        # Salvar imagem se solicitado
         if salvar:
-            # Criar nome do arquivo de saída
             nome_base = os.path.splitext(image_path)[0]
             extensao = os.path.splitext(image_path)[1]
             output_path = f"{nome_base}_pb{extensao}"
-            
-            # Salvar
             cv2.imwrite(output_path, img_pb)
-            
             return output_path
         else:
             return image_path
@@ -190,16 +180,14 @@ def corrigir_rotacao_documento(image_path: str, debug: bool = False) -> str:
             
             if lines is not None and len(lines) > 5:
                 angles = []
-                for line in lines[:20]:  # Pegar 20 linhas mais fortes
+                for line in lines[:20]:
                     rho, theta = line[0]
-                    angle_deg = np.degrees(theta) - 90  # Converter para graus
+                    angle_deg = np.degrees(theta) - 90
                     
-                    # Filtrar ângulos próximos de 0° (linhas horizontais/verticais)
                     if -45 <= angle_deg <= 45:
                         angles.append(angle_deg)
                 
                 if angles:
-                    # Usar mediana (mais robusto que média)
                     angle_correcao = np.median(angles)
                     
                     if debug:
@@ -213,7 +201,6 @@ def corrigir_rotacao_documento(image_path: str, debug: bool = False) -> str:
             print("   ⚠️ Não foi possível detectar ângulo")
             return image_path
         
-        # ✅ Corrigir rotações >= 0.05 graus (mais sensível)
         if abs(angle_correcao) < 0.05:
             if debug:
                 print(f"   ✅ Rotação insignificante ({angle_correcao:.3f}°)")
@@ -221,21 +208,18 @@ def corrigir_rotacao_documento(image_path: str, debug: bool = False) -> str:
         
         print(f"   🔄 Corrigindo rotação: {angle_correcao:.3f}°")
         
-        # Matriz de rotação
         center = (width // 2, height // 2)
         rotation_matrix = cv2.getRotationMatrix2D(center, angle_correcao, 1.0)
         
-        # Rotacionar com borda branca
         img_rotated = cv2.warpAffine(
             img,
             rotation_matrix,
             (width, height),
             borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(255, 255, 255),  # Branco
+            borderValue=(255, 255, 255),
             flags=cv2.INTER_CUBIC
         )
         
-        # Salvar imagem corrigida
         nome_base = os.path.splitext(image_path)[0]
         extensao = os.path.splitext(image_path)[1]
         output_path = f"{nome_base}_deskewed{extensao}"
@@ -311,10 +295,13 @@ def preprocessar_arquivo(file_path: str, tipo: str = "aluno") -> str:
 
 def listar_arquivos_suportados(diretorio: str = ".") -> dict:
     """
-    Lista todos os arquivos suportados no diretório
+    Lista todos os arquivos suportados no diretório (imagens e PDFs).
+    
+    Args:
+        diretorio: Caminho do diretório a ser listado (padrão: diretório atual)
     
     Returns:
-        Dicionário com listas de arquivos por tipo
+        Dicionário com chaves 'imagens', 'pdfs' e 'todos' contendo listas de nomes de arquivos
     """
     arquivos_suportados = {
         'imagens': [],
@@ -344,25 +331,36 @@ def listar_arquivos_suportados(diretorio: str = ".") -> dict:
 # SEÇÃO 2: OMR - DETECÇÃO DE ALTERNATIVAS MARCADAS
 # ===========================================
 
-def salvar_debug_deteccao(image_path, bolhas_pintadas, crop):
-    """Salva imagem de debug com as bolhas detectadas marcadas"""
+def salvar_debug_deteccao(image_path: str, bolhas_pintadas: list, crop: np.ndarray) -> None:
+    """
+    Salva imagem de debug com as bolhas detectadas marcadas em verde.
+    
+    Args:
+        image_path: Caminho da imagem original
+        bolhas_pintadas: Lista de tuplas (cx, cy, contorno, intensidade, area, circularidade, preenchimento)
+        crop: Array numpy com a região recortada da imagem
+    """
     debug_img = crop.copy()
     
     for cx, cy, cnt, intensidade, area, circ, preenchimento in bolhas_pintadas:
-        # Marcar com círculo verde
         cv2.circle(debug_img, (cx, cy), 8, (0, 255, 0), 2)
-        # Adicionar texto com intensidade
         cv2.putText(debug_img, f"{intensidade:.0f}", (cx-15, cy-15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
     
-    # Salvar imagem de debug
     filename = image_path.replace('.jpg', '').replace('.png', '')
     debug_filename = f"debug_{os.path.basename(filename)}.png"
     cv2.imwrite(debug_filename, debug_img)
 
-def detectar_respostas_pdf(image_path, debug=False):
+def detectar_respostas_pdf(image_path: str, debug: bool = False) -> list:
     """
     Detecta as respostas marcadas no cartão resposta convertido de PDF.
     Otimizado para imagens de alta resolução com parâmetros específicos para PDFs.
+    
+    Args:
+        image_path: Caminho da imagem do PDF convertido
+        debug: Se deve exibir informações de debug
+    
+    Returns:
+        Lista com as respostas detectadas (44 ou 52 questões dependendo do cartão)
     VERSÃO UNIVERSAL: Detecta automaticamente se é 44 ou 52 questões.
     Retorna uma lista com as respostas ['A', 'B', 'C', 'D', '?'] onde '?' significa não detectado.
     """
@@ -583,15 +581,18 @@ def detectar_respostas_pdf(image_path, debug=False):
         return ['?'] * num_questoes
 
 
-def detectar_respostas_52_questoes(image_path, debug=False, eh_gabarito=False):
+def detectar_respostas_52_questoes(image_path: str, debug: bool = False, eh_gabarito: bool = False) -> list:
     """
-    OMR: Detecta APENAS alternativas pintadas usando OpenCV para cartões com 52 questões
+    OMR: Detecta APENAS alternativas pintadas usando OpenCV para cartões com 52 questões.
     Layout: 4 colunas x 13 linhas = 52 questões
     
     Args:
         image_path: Caminho da imagem
         debug: Se deve mostrar informações de debug
         eh_gabarito: Se True, usa crop otimizado para gabaritos (impressão limpa)
+    
+    Returns:
+        Lista com 52 respostas detectadas (A/B/C/D ou '?' para não detectadas)
     """
     img_cv = cv2.imread(image_path)
     height, width = img_cv.shape[:2]
@@ -692,8 +693,7 @@ def detectar_respostas_52_questoes(image_path, debug=False, eh_gabarito=False):
         print(f"⚠️ Poucas bolhas detectadas ({len(bolhas_pintadas)}). Retornando lista vazia.")
         return ['?'] * 52
     
-    # MELHORIA: Organização mais precisa usando KMeans para detectar as 4 colunas
-    
+
     # 1) Após montar bolhas_pintadas, separe só os 'cx' (centros X)
     xs = np.array([b[0] for b in bolhas_pintadas], dtype=np.float32).reshape(-1, 1)
 
@@ -867,8 +867,6 @@ def detectar_respostas_52_questoes(image_path, debug=False, eh_gabarito=False):
                         
                         if segunda_mais_escura and (segunda_mais_escura[3] - bolha_mais_escura[3]) > 30:
                             bolhas_marcadas = [bolha_mais_escura]
-                            if debug and col_idx == 2:
-                                print(f"♻️ Q{q+1} (Col 3): Marcação fraca recuperada (int={bolha_mais_escura[3]:.1f})")
                         else:
                             letra = '?'
                     else:
@@ -925,31 +923,27 @@ def detectar_respostas_52_questoes(image_path, debug=False, eh_gabarito=False):
                                 
                                 if 0 <= letra_idx < len(letras):
                                     letra = letras[letra_idx]
-                                    if debug and col_idx == 2 and q in [28, 29, 30, 31, 34, 35, 36, 38]:
-                                        print(f"✅ Q{q+1} (Col 3): Detectado '{letra}' (cx={cx:.1f}, zona {idx})")
                                 break
             else:
                 # NÃO ENCONTROU LINHA PRÓXIMA
                 letra = '?'
-                if debug and col_idx == 2:
-                    print(f"⚠️ Q{q+1} (Col 3): Linha não encontrada (y_esperado={y_esperado:.1f}, tolerancia={tolerancia:.1f})")
-                    linhas_disponiveis = [linha[0][1] for idx, linha in enumerate(linhas) if idx not in linhas_usadas]
-                    if linhas_disponiveis:
-                        print(f"   Linhas disponíveis: {linhas_disponiveis[:5]}")
 
             respostas_finais[q] = letra
     
     return respostas_finais
 
-def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
+def detectar_respostas_44_questoes(image_path: str, debug: bool = False, eh_gabarito: bool = False) -> list:
     """
-    OMR: Detecta APENAS alternativas pintadas usando OpenCV para cartões com 44 questões
+    OMR: Detecta APENAS alternativas pintadas usando OpenCV para cartões com 44 questões.
     Layout: 4 colunas x 11 linhas = 44 questões
     
     Args:
         image_path: Caminho da imagem
         debug: Se deve mostrar informações de debug
         eh_gabarito: Se True, usa crop otimizado para gabaritos (impressão limpa)
+    
+    Returns:
+        Lista com 44 respostas detectadas (A/B/C/D ou '?' para não detectadas)
     """
     img_cv = cv2.imread(image_path)
     height, width = img_cv.shape[:2]
@@ -1034,6 +1028,7 @@ def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
                                 
                                 if aceita:
                                     bolhas_pintadas.append((cx, cy, cnt, intensidade_media, area, circularity, percentual_preenchimento))
+    
     if debug:
         salvar_debug_deteccao(image_path, bolhas_pintadas, crop)
     
@@ -1209,8 +1204,6 @@ def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
                         
                         if segunda_mais_escura and (segunda_mais_escura[3] - bolha_mais_escura[3]) > 30:
                             bolhas_marcadas = [bolha_mais_escura]
-                            if debug and col_idx == 2:
-                                print(f"♻️ Q{q+1} (Col 3-44Q): Marcação fraca recuperada (int={bolha_mais_escura[3]:.1f})")
                         else:
                             letra = '?'
                     else:
@@ -1261,17 +1254,10 @@ def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
                                 
                                 if 0 <= letra_idx < len(letras):
                                     letra = letras[letra_idx]
-                                    if debug and col_idx == 2:
-                                        print(f"✅ Q{q+1} (Col 3-44Q): Detectado '{letra}' (cx={cx:.1f}, zona {idx})")
                                 break
             else:
                 # NÃO ENCONTROU LINHA PRÓXIMA
                 letra = '?'
-                if debug and col_idx == 2:
-                    print(f"⚠️ Q{q+1} (Col 3-44Q): Linha não encontrada (y_esperado={y_esperado:.1f}, tolerancia={tolerancia:.1f})")
-                    linhas_disponiveis = [linha[0][1] for idx, linha in enumerate(linhas) if idx not in linhas_usadas]
-                    if linhas_disponiveis:
-                        print(f"   Linhas disponíveis: {linhas_disponiveis[:5]}")
 
             respostas_finais[q] = letra
     
@@ -1279,7 +1265,7 @@ def detectar_respostas_44_questoes(image_path, debug=False, eh_gabarito=False):
    
 
 
-def detectar_respostas_universal(image_path, debug=False):
+def detectar_respostas_universal(image_path: str, debug: bool = False) -> list:
     """
     Função universal que detecta automaticamente se o cartão tem 44 ou 52 questões
     e chama a função apropriada.
@@ -1340,22 +1326,7 @@ def detectar_respostas_universal(image_path, debug=False):
             print("📋 Detectado cartão com 52 questões")
         return detectar_respostas_52_questoes(image_path, debug)
 
-
-    """Salva imagem de debug com as bolhas detectadas marcadas"""
-    debug_img = crop.copy()
-    
-    for cx, cy, cnt, intensidade, area, circ, preenchimento in bolhas_pintadas:
-        # Marcar com círculo verde
-        cv2.circle(debug_img, (cx, cy), 8, (0, 255, 0), 2)
-        # Adicionar texto com intensidade
-        cv2.putText(debug_img, f"{intensidade:.0f}", (cx-15, cy-15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-    
-    # Salvar imagem de debug
-    filename = image_path.replace('.jpg', '').replace('.png', '')
-    debug_filename = f"debug_{os.path.basename(filename)}.png"
-    cv2.imwrite(debug_filename, debug_img)
-
-def detectar_respostas_por_tipo(image_path, num_questoes=52, debug=False, eh_gabarito=False):
+def detectar_respostas_por_tipo(image_path: str, num_questoes: int = 52, debug: bool = False, eh_gabarito: bool = False) -> list:
     """
     Função auxiliar que escolhe a detecção correta baseada no número de questões.
     
@@ -1366,7 +1337,7 @@ def detectar_respostas_por_tipo(image_path, num_questoes=52, debug=False, eh_gab
         eh_gabarito: Se True, usa crop específico para gabaritos
         
     Returns:
-        Lista com as respostas detectadas
+        Lista com as respostas detectadas (A/B/C/D ou '?')
     """
     if num_questoes == 44:
         return detectar_respostas_44_questoes(image_path, debug=debug, eh_gabarito=eh_gabarito)
@@ -1378,7 +1349,12 @@ def detectar_respostas_por_tipo(image_path, num_questoes=52, debug=False, eh_gab
 # ===========================================
 
 def configurar_gemini():
-    """Configura o Gemini API"""
+    """
+    Configura o Gemini API usando a chave do arquivo .env.
+    
+    Returns:
+        Model do Gemini (gemini-2.5-flash) ou None se houver erro
+    """
     if not GEMINI_DISPONIVEL:
         print("❌ Gemini não está disponível")
         print("💡 Para instalar: pip install google-generativeai")
@@ -1404,8 +1380,16 @@ def configurar_gemini():
         print(f"❌ Erro ao configurar Gemini: {e}")
         return None
 
-def converter_imagem_para_base64(image_path):
-    """Converte imagem para base64 para envio ao Gemini"""
+def converter_imagem_para_base64(image_path: str):
+    """
+    Converte imagem para objeto PIL Image para envio ao Gemini.
+    
+    Args:
+        image_path: Caminho do arquivo de imagem
+    
+    Returns:
+        PIL Image ou None em caso de erro
+    """
     try:
         with open(image_path, "rb") as image_file:
             image_data = image_file.read()
@@ -1419,9 +1403,16 @@ def converter_imagem_para_base64(image_path):
         print(f"❌ Erro ao converter imagem: {e}")
         return None
 
-def extrair_cabecalho_com_gemini(model, image_path):
+def extrair_cabecalho_com_gemini(model, image_path: str) -> Optional[dict]:
     """
-    Usa Gemini Vision para extrair informações do cabeçalho do cartão resposta
+    Usa Gemini Vision para extrair informações do cabeçalho do cartão resposta.
+    
+    Args:
+        model: Instância do modelo Gemini configurado
+        image_path: Caminho da imagem do cartão
+    
+    Returns:
+        Dicionário com chaves 'escola', 'aluno', 'turma', 'nascimento' ou None se falhar
     """
     if not model:
         print("⚠️ Gemini não configurado, usando OCR")
@@ -1490,9 +1481,15 @@ def extrair_cabecalho_com_gemini(model, image_path):
         print(f"❌ Erro na extração do cabeçalho com Gemini: {e}")
         return None
 
-def extrair_cabecalho_com_ocr_fallback(image_path):
+def extrair_cabecalho_com_ocr_fallback(image_path: str) -> dict:
     """
-    Função de fallback usando OCR tradicional quando Gemini falha
+    Função de fallback usando OCR tradicional (Tesseract) quando Gemini falha.
+    
+    Args:
+        image_path: Caminho da imagem do cartão
+    
+    Returns:
+        Dicionário com chaves 'escola', 'aluno', 'turma', 'nascimento' (pode conter 'N/A')
     """
     try:
         # Carregar imagem
@@ -1595,7 +1592,15 @@ def extrair_cabecalho_com_fallback(model, image_path):
 # ===========================================
 
 def carregar_credenciais(scopes: List[str]) -> Optional[Credentials]:
-    """Carrega credenciais do serviço do arquivo JSON."""
+    """
+    Carrega credenciais do Google Service Account do arquivo JSON.
+    
+    Args:
+        scopes: Lista de escopos de permissão do Google API
+    
+    Returns:
+        Objeto Credentials ou None se houver erro
+    """
     try:
         credentials = Credentials.from_service_account_file('credenciais_google.json', scopes=scopes)
         return credentials
@@ -1609,7 +1614,12 @@ def carregar_credenciais(scopes: List[str]) -> Optional[Credentials]:
 
 
 def configurar_google_sheets():
-    """Configura conexão com Google Sheets"""
+    """
+    Configura conexão com Google Sheets usando gspread.
+    
+    Returns:
+        Cliente gspread autorizado ou None se houver erro
+    """
     scope = [
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive'
@@ -1627,7 +1637,15 @@ def configurar_google_sheets():
 
 
 def configurar_google_drive_service(scopes: Optional[List[str]] = None):
-    """Configura conexão com Google Drive e retorna serviço da API."""
+    """
+    Configura conexão com Google Drive e retorna serviço da API v3.
+    
+    Args:
+        scopes: Lista de escopos de permissão (padrão: readonly)
+    
+    Returns:
+        Objeto service do Google Drive API ou None se houver erro
+    """
     scopes = scopes or ['https://www.googleapis.com/auth/drive.readonly']
     credentials = carregar_credenciais(scopes)
     if not credentials:
@@ -1643,7 +1661,12 @@ def configurar_google_drive_service(scopes: Optional[List[str]] = None):
     return None
 
 def configurar_google_drive_service_completo():
-    """Configura conexão com Google Drive com permissões completas para mover arquivos."""
+    """
+    Configura conexão com Google Drive com permissões completas (escrita e movimentação).
+    
+    Returns:
+        Objeto service do Google Drive API com permissões completas ou None se houver erro
+    """
     scopes = [
         'https://www.googleapis.com/auth/drive',
         'https://www.googleapis.com/auth/drive.file'
@@ -1662,7 +1685,16 @@ def configurar_google_drive_service_completo():
     return None
 
 def encontrar_ou_criar_pasta_processados(service, pasta_origem_id: str) -> str:
-    """Usa a pasta 'cartoes-processados' específica no Google Drive."""
+    """
+    Verifica acesso à pasta 'cartoes-processados' no Google Drive.
+    
+    Args:
+        service: Objeto service do Google Drive API
+        pasta_origem_id: ID da pasta de origem (não utilizado, mantido por compatibilidade)
+    
+    Returns:
+        ID da pasta 'cartoes-processados' ou None se houver erro
+    """
     pasta_processados_id = "1fVFfewF2qUe-wgORQ5p15on5apOQ2G_i"
 
     try:
@@ -1677,7 +1709,19 @@ def encontrar_ou_criar_pasta_processados(service, pasta_origem_id: str) -> str:
         return None
 
 def mover_arquivo_no_drive(service, arquivo_id: str, pasta_origem_id: str, pasta_destino_id: str, nome_arquivo: str) -> bool:
-    """Move um arquivo de uma pasta para outra no Google Drive."""
+    """
+    Move um arquivo de uma pasta para outra no Google Drive.
+    
+    Args:
+        service: Objeto service do Google Drive API
+        arquivo_id: ID do arquivo a ser movido
+        pasta_origem_id: ID da pasta de origem (usado para logs)
+        pasta_destino_id: ID da pasta de destino
+        nome_arquivo: Nome do arquivo (usado para logs)
+    
+    Returns:
+        True se movido com sucesso, False caso contrário
+    """
     try:
         # Obter pais atuais do arquivo
         file_metadata = service.files().get(fileId=arquivo_id, fields='parents').execute()
@@ -1697,7 +1741,16 @@ def mover_arquivo_no_drive(service, arquivo_id: str, pasta_origem_id: str, pasta
         return False
 
 def obter_metadados_pasta_drive(service, pasta_id: str) -> dict:
-    """Obtém metadados de todos os arquivos da pasta do Google Drive."""
+    """
+    Obtém metadados de todos os arquivos da pasta do Google Drive.
+    
+    Args:
+        service: Objeto service do Google Drive API
+        pasta_id: ID da pasta no Google Drive
+    
+    Returns:
+        Dicionário mapeando arquivo_id para metadados (id, nome, mimeType, modifiedTime)
+    """
     metadados = {}
     try:
         query = f"parents in '{pasta_id}' and trashed=false"
@@ -2073,7 +2126,7 @@ def baixar_e_processar_pasta_drive(
                 )
 
             # Mover arquivos processados se houve sucesso e está habilitado
-            if resultados and mover_processados and pasta_destino_id and num_questoes > 44:
+            if resultados and mover_processados and pasta_destino_id:
                 print(f"\n📦 Movendo arquivos individuais processados no Google Drive...")
                 # Filtrar metadata apenas dos arquivos individuais (arquivos_metadata é um dict)
                 individual_metadata = {nome: meta for nome, meta in arquivos_metadata.items() 

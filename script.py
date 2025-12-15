@@ -607,7 +607,7 @@ def detectar_respostas_52_questoes(image_path: str, debug: bool = False, eh_gaba
         # ALUNOS: Crop mais amplo (marcações manuais podem variar)
         # Altura: 58% a 96% (mais tolerante para capturar marcações em diferentes posições)
         # Largura: 2% a 98% (margens mínimas para não perder marcações nas bordas)
-        crop = img_cv[int(height*0.58):int(height*0.96), int(width*0.02):int(width*0.98)]
+        crop = img_cv[int(height*0.62):int(height*0.96), int(width*0.02):int(width*0.98)]
     
     # Converter para escala de cinza
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
@@ -1371,7 +1371,7 @@ def configurar_gemini():
         genai.configure(api_key=GEMINI_API_KEY)
         
         # Testar conexão
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash-lite')
         
         print("✅ Gemini configurado com sucesso!")
         return model
@@ -2184,7 +2184,7 @@ def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=
         # Verificar se há cabeçalho
         if not worksheet.get_all_values():
             cabecalho = [
-                "Data", "Escola", "Nome completo", "Nascimento", "Turma", "Acertos", "Erros", "Anuladas", "Porcentagem"
+                "Data", "Escola", "Nome completo", "Nascimento", "Turma", "Acertos Língua Portuguesa", "Acertos Matemática", "Erros Língua Portuguesa", "Erros Matemática", "Anuladas", "Porcentagem"
             ]
             worksheet.append_row(cabecalho)
             print("📋 Cabeçalho criado na planilha")
@@ -2196,10 +2196,14 @@ def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=
         escola = dados_aluno.get("Escola", "N/A")
         if escola == "N/A" or not escola.strip().lower():
             escola = "N/A"
+        else:
+            escola = escola.lower()  # Converter para minúsculas
         
         aluno = dados_aluno.get("Aluno", "N/A")
         if aluno == "N/A" or not aluno.strip().lower():
             aluno = "N/A"
+        else:
+            aluno = aluno.lower()  # Converter para minúsculas
             
         nascimento = dados_aluno.get("Nascimento", "N/A")
         if nascimento == "N/A" or not nascimento.strip().lower():
@@ -2208,6 +2212,8 @@ def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=
         turma = dados_aluno.get("Turma", "N/A")
         if turma == "N/A" or not turma.strip().lower():
             turma = "N/A"
+        else:
+            turma = turma.lower()  # Converter para minúsculas
         
         linha_dados = [
             agora,
@@ -2215,8 +2221,10 @@ def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=
             aluno, 
             nascimento,
             turma,
-            resultado_comparacao["acertos"],
-            resultado_comparacao["erros"],
+            resultado_comparacao.get("acertos_portugues", 0),
+            resultado_comparacao.get("acertos_matematica", 0),
+            resultado_comparacao.get("erros_portugues", 0),
+            resultado_comparacao.get("erros_matematica", 0),
             resultado_comparacao.get("anuladas", 0),
             f"{resultado_comparacao['percentual']:.1f}%"
         ]
@@ -2229,9 +2237,9 @@ def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=
         print(f"   📅 Nascimento: {nascimento}")
         print(f"   📚 Turma: {turma}")
         if resultado_comparacao.get("anuladas", 0) > 0:
-            print(f"   📊 Resultado: {resultado_comparacao['acertos']} acertos | {resultado_comparacao['erros']} erros | {resultado_comparacao['anuladas']} anuladas | {resultado_comparacao['percentual']:.1f}%")
+            print(f"   📊 Resultado: ✓ {resultado_comparacao.get('acertos_portugues', 0)}PT/{resultado_comparacao.get('acertos_matematica', 0)}MT | ✗ {resultado_comparacao.get('erros_portugues', 0)}PT/{resultado_comparacao.get('erros_matematica', 0)}MT | {resultado_comparacao['anuladas']} anuladas | {resultado_comparacao['percentual']:.1f}%")
         else:
-            print(f"   📊 Resultado: {resultado_comparacao['acertos']} acertos | {resultado_comparacao['erros']} erros | {resultado_comparacao['percentual']:.1f}%")
+            print(f"   📊 Resultado: ✓ {resultado_comparacao.get('acertos_portugues', 0)}PT/{resultado_comparacao.get('acertos_matematica', 0)}MT | ✗ {resultado_comparacao.get('erros_portugues', 0)}PT/{resultado_comparacao.get('erros_matematica', 0)}MT | {resultado_comparacao['percentual']:.1f}%")
         
         return True
         
@@ -2290,10 +2298,26 @@ def comparar_respostas(respostas_gabarito, respostas_aluno):
     anuladas = 0
     detalhes = []
     
+    # Contadores separados para português e matemática
+    acertos_portugues = 0
+    acertos_matematica = 0
+    erros_portugues = 0
+    erros_matematica = 0
+    
+    # Determinar número de questões por coluna baseado no total
+    # Para 52 questões: 13 por coluna
+    # Para 44 questões: 11 por coluna
+    questoes_por_coluna = 13 if min_questoes == 52 else 11
+    
     for i in range(min_questoes):
         questao = i + 1
         gabarito = respostas_gabarito[i] if i < len(respostas_gabarito) else "N/A"
         aluno = respostas_aluno[i] if i < len(respostas_aluno) else "N/A"
+        
+        # Determinar se é questão de português ou matemática
+        # Colunas: 1ª português, 2ª matemática, 3ª português, 4ª matemática
+        coluna = i // questoes_por_coluna  # 0, 1, 2, 3
+        eh_portugues = (coluna == 0 or coluna == 2)  # Colunas 1 e 3
         
         # 🔧 Se gabarito ou aluno tem '?', anular questão (não conta no cálculo)
         if gabarito == '?' or aluno == '?':
@@ -2303,22 +2327,34 @@ def comparar_respostas(respostas_gabarito, respostas_aluno):
                 "questao": questao,
                 "gabarito": gabarito,
                 "aluno": aluno,
-                "status": "ANULADA"
+                "status": "ANULADA",
+                "disciplina": "Português" if eh_portugues else "Matemática"
             })
             continue
         
         if gabarito == aluno:
             status = "✓"
             acertos += 1
+            # Contar acerto na disciplina correspondente
+            if eh_portugues:
+                acertos_portugues += 1
+            else:
+                acertos_matematica += 1
         else:
             status = "✗"
             erros += 1
+            # Contar erro na disciplina correspondente
+            if eh_portugues:
+                erros_portugues += 1
+            else:
+                erros_matematica += 1
         
         detalhes.append({
             "questao": questao,
             "gabarito": gabarito,
             "aluno": aluno,
-            "status": status
+            "status": status,
+            "disciplina": "Português" if eh_portugues else "Matemática"
         })
     
     # Calcular sobre questões válidas (excluindo anuladas)
@@ -2330,7 +2366,11 @@ def comparar_respostas(respostas_gabarito, respostas_aluno):
         "questoes_validas": questoes_validas,
         "anuladas": anuladas,
         "acertos": acertos,
+        "acertos_portugues": acertos_portugues,
+        "acertos_matematica": acertos_matematica,
         "erros": erros,
+        "erros_portugues": erros_portugues,
+        "erros_matematica": erros_matematica,
         "percentual": percentual,
         "detalhes": detalhes,
         "questoes_detectadas": min_questoes
@@ -2647,13 +2687,25 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
                 "arquivo": aluno_file,
                 "dados_completos": dados_aluno,  # Dados completos do cabeçalho
                 "acertos": resultado['acertos'],
+                "acertos_portugues": resultado.get('acertos_portugues', 0),
+                "acertos_matematica": resultado.get('acertos_matematica', 0),
                 "total": resultado['total'],
                 "percentual": resultado['percentual'],
                 "questoes_detectadas": questoes_aluno
             }
             resultados_lote.append(resultado_completo)
             
-            print(f"📊 Resultado: {resultado['acertos']}/{resultado['total']} acertos ({resultado['percentual']:.1f}%)")
+            print(f"📊 Resultado: ✓ {resultado.get('acertos_portugues', 0)}PT/{resultado.get('acertos_matematica', 0)}MT | ✗ {resultado.get('erros_portugues', 0)}PT/{resultado.get('erros_matematica', 0)}MT | Total {resultado['acertos']}/{resultado['total']} ({resultado['percentual']:.1f}%)")
+            
+            # Delay de 10 segundos após processar cada cartão
+            if i < len(arquivos_alunos):
+                print(f"⏳ Aguardando 12 segundos antes do próximo cartão...")
+                time.sleep(20)
+            
+        except Exception as e:
+            print(f"❌ ERRO ao processar {aluno_file}: {e}")
+            print(f"⏳ Aguardando 10 segundos antes do próximo cartão...")
+            time.sleep(20)
             
         except Exception as e:
             print(f"❌ ERRO ao processar {aluno_file}: {e}")
@@ -2666,6 +2718,8 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
                     "Turma": "N/A"
                 },
                 "acertos": 0,
+                "acertos_portugues": 0,
+                "acertos_matematica": 0,
                 "total": 52,
                 "percentual": 0.0,
                 "questoes_detectadas": 0,
@@ -2682,10 +2736,10 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
     print(f"{'='*60}")
     
     if resultados_lote:
-        print(f"\n=== TOTAL DE ALUNOS: {len(resultados)} + RESULTADOS ===")
+        print(f"\n=== TOTAL DE ALUNOS: {len(resultados_lote)} + RESULTADOS ===")
         
-        # Ordenar por percentual (decrescente)
-        resultados_ordenados = sorted(resultados_lote, key=lambda x: x["percentual"], reverse=True)
+        # Ordenar por nome do aluno (ordem alfabética)
+        resultados_ordenados = sorted(resultados_lote, key=lambda x: x["dados_completos"]["Aluno"].lower())
         
         for i, r in enumerate(resultados_ordenados, 1):
             dados = r["dados_completos"]
@@ -2731,7 +2785,11 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
                         }
                         resultado_comparacao = {
                             "acertos": resultado["acertos"],
+                            "acertos_portugues": resultado.get("acertos_portugues", 0),
+                            "acertos_matematica": resultado.get("acertos_matematica", 0),
                             "erros": resultado["total"] - resultado["acertos"],
+                            "erros_portugues": resultado.get("erros_portugues", 0),
+                            "erros_matematica": resultado.get("erros_matematica", 0),
                             "percentual": resultado["percentual"]
                         }
                         enviar_para_planilha(client, dados_simples, resultado_comparacao, questoes_detectadas=resultado.get("questoes_detectadas"))
@@ -2939,8 +2997,13 @@ def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False, num
             }
             resultados_lote.append(resultado_completo)
             
-            print(f"📊 Resultado: {resultado['acertos']}/{resultado['total']} acertos ({resultado['percentual']:.1f}%)")
+            print(f"📊 Resultado: ✓ {resultado.get('acertos_portugues', 0)}PT/{resultado.get('acertos_matematica', 0)}MT | ✗ {resultado.get('erros_portugues', 0)}PT/{resultado.get('erros_matematica', 0)}MT | Total {resultado['acertos']}/{resultado['total']} ({resultado['percentual']:.1f}%)")
             alunos_processados += 1
+            
+            # Delay de 12 segundos após processar cada cartão
+            if i < len(arquivos_alunos):
+                print(f"⏳ Aguardando 12 segundos antes do próximo cartão...")
+                time.sleep(12)
             
         except Exception as e:
             print(f"❌ ERRO ao processar {aluno_file}: {e}")
@@ -2980,10 +3043,10 @@ def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False, num
             print(f"Melhor resultado: {max(acertos_totais)}/52 ({max(percentuais):.1f}%)")
             print(f"Pior resultado: {min(acertos_totais)}/52 ({min(percentuais):.1f}%)")
         
-        # Mostrar ranking
-        print(f"\n=== RANKING DOS ALUNOS ===")
+        # Mostrar ranking (ordenado alfabeticamente)
+        print(f"\n=== LISTA DE ALUNOS (ORDEM ALFABÉTICA) ===")
         resultados_validos = [r for r in resultados_lote if "Erro" not in r["dados"]]
-        resultados_ordenados = sorted(resultados_validos, key=lambda x: x["resultado"]["percentual"], reverse=True)
+        resultados_ordenados = sorted(resultados_validos, key=lambda x: x["dados"].get("Aluno", "").lower())
         
         for i, r in enumerate(resultados_ordenados[:10], 1):  # Top 10
             nome = r["dados"].get("Aluno", "N/A")
@@ -3194,6 +3257,8 @@ def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_ge
                 "arquivo": aluno_file,
                 "dados_completos": dados_aluno,  # Dados completos do cabeçalho
                 "acertos": resultado['acertos'],
+                "acertos_portugues": resultado.get('acertos_portugues', 0),
+                "acertos_matematica": resultado.get('acertos_matematica', 0),
                 "total": resultado['total'],
                 "percentual": resultado['percentual'],
                 "questoes_detectadas": questoes_aluno
@@ -3211,6 +3276,8 @@ def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_ge
                     "Turma": "N/A"
                 },
                 "acertos": 0,
+                "acertos_portugues": 0,
+                "acertos_matematica": 0,
                 "total": 52,
                 "percentual": 0.0,
                 "questoes_detectadas": 0,
@@ -3227,10 +3294,10 @@ def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_ge
     print(f"{'='*60}")
     
     if resultados_lote:
-        print(f"\n=== RESULTADOS DETALHADOS ===")
+        print(f"\n=== RESULTADOS DETALHADOS (ORDEM ALFABÉTICA) ===")
         
-        # Ordenar por percentual (decrescente)
-        resultados_ordenados = sorted(resultados_lote, key=lambda x: x["percentual"], reverse=True)
+        # Ordenar por nome do aluno (ordem alfabética)
+        resultados_ordenados = sorted(resultados_lote, key=lambda x: x["dados_completos"]["Aluno"].lower())
         
         for i, r in enumerate(resultados_ordenados, 1):
             dados = r["dados_completos"]
@@ -3485,6 +3552,8 @@ def processar_pasta_gabaritos_com_sheets(
                 "arquivo": aluno_file,
                 "dados_completos": dados_aluno,  # Dados completos do cabeçalho
                 "acertos": resultado['acertos'],
+                "acertos_portugues": resultado.get('acertos_portugues', 0),
+                "acertos_matematica": resultado.get('acertos_matematica', 0),
                 "total": resultado['total'],
                 "percentual": resultado['percentual'],
                 "questoes_detectadas": questoes_aluno
@@ -3526,6 +3595,8 @@ def processar_pasta_gabaritos_com_sheets(
                     "Turma": "N/A"
                 },
                 "acertos": 0,
+                "acertos_portugues": 0,
+                "acertos_matematica": 0,
                 "total": 52,
                 "percentual": 0.0,
                 "questoes_detectadas": 0,
@@ -3542,10 +3613,10 @@ def processar_pasta_gabaritos_com_sheets(
     print(f"{'='*60}")
     
     if resultados_lote:
-        print(f"\n=== RESULTADOS DETALHADOS ===")
+        print(f"\n=== RESULTADOS DETALHADOS (ORDEM ALFABÉTICA) ===")
         
-        # Ordenar por percentual (decrescente)
-        resultados_ordenados = sorted(resultados_lote, key=lambda x: x["percentual"], reverse=True)
+        # Ordenar por nome do aluno (ordem alfabética)
+        resultados_ordenados = sorted(resultados_lote, key=lambda x: x["dados_completos"]["Aluno"].lower())
         
         for i, r in enumerate(resultados_ordenados, 1):
             dados = r["dados_completos"]
@@ -4098,27 +4169,36 @@ if __name__ == "__main__":
         import json
         from datetime import datetime
         
-        # Arquivo para rastrear arquivos já processados por ID
+        # Arquivo para rastrear arquivos já processados por ID e NOME
         historico_file = "historico_monitoramento.json"
         
         def carregar_historico():
-            """Carrega IDs dos arquivos já processados"""
+            """Carrega IDs e nomes (sem extensão) dos arquivos já processados"""
             try:
                 if os.path.exists(historico_file):
                     with open(historico_file, 'r', encoding='utf-8') as f:
                         data = json.load(f)
-                        return set(data.get('arquivos_processados', []))
+                        # Migração: se formato antigo (lista), converter para novo formato
+                        arquivos = data.get('arquivos_processados', [])
+                        if arquivos and isinstance(arquivos[0], str):
+                            # Formato antigo: apenas IDs
+                            return {'ids': set(arquivos), 'nomes': set()}
+                        else:
+                            # Formato novo: dicionário com ID e nome
+                            ids = set(item['id'] for item in arquivos)
+                            nomes = set(item['nome_sem_ext'] for item in arquivos)
+                            return {'ids': ids, 'nomes': nomes}
             except Exception as e:
                 print(f"⚠️ Erro ao carregar histórico: {e}")
-            return set()
+            return {'ids': set(), 'nomes': set()}
         
         def salvar_historico(arquivos_processados):
-            """Salva IDs dos arquivos processados"""
+            """Salva IDs e nomes dos arquivos processados"""
             try:
                 data = {
                     'ultima_verificacao': datetime.now().isoformat(),
                     'total_processados': len(arquivos_processados),
-                    'arquivos_processados': list(arquivos_processados)
+                    'arquivos_processados': arquivos_processados
                 }
                 with open(historico_file, 'w', encoding='utf-8') as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
@@ -4126,13 +4206,13 @@ if __name__ == "__main__":
                 print(f"⚠️ Erro ao salvar histórico: {e}")
         
         def verificar_novos_arquivos():
-            """Verifica se há NOVOS arquivos para processar (por ID)"""
+            """Verifica se há NOVOS arquivos para processar (por ID e NOME)"""
             try:
                 # Configurar Google Drive
                 drive_service = configurar_google_drive_service_completo()
                 if not drive_service:
                     print("❌ Erro ao conectar com Google Drive")
-                    return [], set()
+                    return [], {'ids': set(), 'nomes': set()}
                 
                 # Listar arquivos na pasta
                 query = f"'{pasta_drive_id}' in parents and trashed = false"
@@ -4143,54 +4223,78 @@ if __name__ == "__main__":
                 ).execute()
                 
                 arquivos = results.get('files', [])
-                arquivos_processados = carregar_historico()
+                historico = carregar_historico()
+                ids_processados = historico['ids']
+                nomes_processados = historico['nomes']
                 
                 # 🆕 DEBUG: Mostrar TODOS os arquivos encontrados
                 print(f"\n📂 Arquivos na pasta do Drive: {len(arquivos)}")
                 for arq in arquivos:
                     nome = arq['name']
                     arquivo_id = arq['id']
-                    ja_processado = arquivo_id in arquivos_processados
-                    status = "✅ PROCESSADO" if ja_processado else "🆕 NOVO"
-                    print(f"   {status} | {nome} ")
+                    nome_sem_ext = os.path.splitext(nome)[0].lower()
+                    
+                    # Verificar duplicata por ID ou NOME
+                    ja_processado_id = arquivo_id in ids_processados
+                    ja_processado_nome = nome_sem_ext in nomes_processados
+                    
+                    if ja_processado_id or ja_processado_nome:
+                        motivo = "ID" if ja_processado_id else "NOME"
+                        print(f"   ✅ PROCESSADO ({motivo}) | {nome}")
+                    else:
+                        print(f"   🆕 NOVO | {nome}")
                 
                 novos_cartoes = []
                 tem_gabarito = False
                 
                 for arquivo in arquivos:
                     arquivo_id = arquivo['id']
-                    nome = arquivo['name'].lower()
+                    nome = arquivo['name']
+                    nome_lower = nome.lower()
+                    nome_sem_ext = os.path.splitext(nome)[0].lower()
                     
                     # Verificar se é o gabarito (nunca marcar como processado)
-                    if 'gabarito' in nome and any(ext in nome for ext in ['.pdf', '.png', '.jpg', '.jpeg']):
+                    if 'gabarito' in nome_lower and any(ext in nome_lower for ext in ['.pdf', '.png', '.jpg', '.jpeg']):
                         tem_gabarito = True
-                        print(f"📋 Gabarito detectado: {arquivo['name']}")
+                        print(f"📋 Gabarito detectado: {nome}")
                         continue
                     
-                    # Verificar se é um cartão de aluno NOVO (por ID)
-                    if (arquivo_id not in arquivos_processados and 
-                        any(ext in nome for ext in ['.pdf', '.png', '.jpg', '.jpeg'])):
-                        tipo = "📄 PDF" if nome.endswith('.pdf') else "🖼️ Imagem"
-                        print(f"   {tipo} NOVO detectado: {arquivo['name']}")
+                    # Verificar se é um cartão de aluno NOVO (por ID E NOME)
+                    if any(ext in nome_lower for ext in ['.pdf', '.png', '.jpg', '.jpeg']):
+                        # Duplicata por ID?
+                        if arquivo_id in ids_processados:
+                            print(f"   ⏭️ Ignorado (ID duplicado): {nome}")
+                            continue
+                        
+                        # Duplicata por NOME?
+                        if nome_sem_ext in nomes_processados:
+                            print(f"   ⏭️ Ignorado (NOME duplicado): {nome}")
+                            print(f"      ⚠️ Arquivo com mesmo nome já foi processado (mesmo com extensão diferente)")
+                            continue
+                        
+                        # É NOVO!
+                        tipo = "📄 PDF" if nome_lower.endswith('.pdf') else "🖼️ Imagem"
+                        print(f"   {tipo} NOVO detectado: {nome}")
                         novos_cartoes.append(arquivo)
                 
                 if not tem_gabarito and novos_cartoes:
                     print("⚠️ Novos cartões encontrados mas GABARITO não está na pasta!")
-                    return [], arquivos_processados
+                    return [], historico
                 
                 print(f"\n📊 Resumo:")
                 print(f"   Total na pasta: {len(arquivos)}")
-                print(f"   Já processados: {len(arquivos_processados)}")
+                print(f"   Já processados (IDs): {len(ids_processados)}")
+                print(f"   Já processados (Nomes): {len(nomes_processados)}")
                 print(f"   Gabarito: {'✅ Encontrado' if tem_gabarito else '❌ Não encontrado'}")
                 print(f"   Novos a processar: {len(novos_cartoes)}")
                 
-                return novos_cartoes, arquivos_processados
+                return novos_cartoes, historico
                 
             except Exception as e:
                 print(f"❌ Erro ao verificar arquivos: {e}")
                 import traceback
                 traceback.print_exc()
-                return [], set()
+                return [], {'ids': set(), 'nomes': set()}
         
         # Loop de monitoramento
         contador_verificacoes = 0
@@ -4201,8 +4305,8 @@ if __name__ == "__main__":
                     timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
                     print(f"\n🔍 Verificação #{contador_verificacoes} - {timestamp}")
                     
-                    # Verificar NOVOS cartões (por ID)
-                    novos_cartoes, arquivos_processados = verificar_novos_arquivos()
+                    # Verificar NOVOS cartões (por ID e NOME)
+                    novos_cartoes, historico = verificar_novos_arquivos()
                     
                     if novos_cartoes:
                         print(f"🆕 Encontrados {len(novos_cartoes)} NOVOS cartões!")
@@ -4271,7 +4375,7 @@ if __name__ == "__main__":
                             exibir_gabarito_simples(respostas_gabarito)
                             
                             # 2. Processar cada cartão NOVO (separar PDFs de imagens)
-                            ids_processados_agora = []
+                            arquivos_processados_agora = []  # Lista de {id, nome_sem_ext}
                             pdfs_para_processar = []
                             imagens_para_processar = []
                             
@@ -4390,6 +4494,11 @@ if __name__ == "__main__":
                                                     }
                                                     enviar_para_planilha(client, dados_envio, resultado, PLANILHA_ID, questoes_detectadas=questoes_detectadas)
                                                 
+                                                # Delay de 12 segundos após processar cada cartão
+                                                if pagina_idx < len(imagens_paginas):
+                                                    print(f"   ⏳ Aguardando 12 segundos antes do próximo cartão...")
+                                                    time.sleep(12)
+                                                
                                             except Exception as e:
                                                 print(f"   ❌ Erro na página {pagina_idx}: {e}")
                                         
@@ -4401,8 +4510,13 @@ if __name__ == "__main__":
                                             except:
                                                 pass
                                         
-                                        # Marcar PDF como processado
-                                        ids_processados_agora.append(pdf_info['id'])
+                                        # Marcar PDF como processado (ID + NOME)
+                                        nome_sem_ext = os.path.splitext(pdf_info['name'])[0].lower()
+                                        arquivos_processados_agora.append({
+                                            'id': pdf_info['id'],
+                                            'nome_sem_ext': nome_sem_ext,
+                                            'nome_original': pdf_info['name']
+                                        })
                                         print(f"\n✅ PDF processado: {pdf_info['name']}")
                                         
                                     except Exception as e:
@@ -4482,18 +4596,29 @@ if __name__ == "__main__":
                                             }
                                             enviar_para_planilha(client, dados_envio, resultado, PLANILHA_ID, questoes_detectadas=questoes_detectadas)
                                         
-                                        # Marcar como processado
-                                        ids_processados_agora.append(cartao_info['id'])
+                                        # Marcar como processado (ID + NOME)
+                                        nome_sem_ext = os.path.splitext(cartao_info['name'])[0].lower()
+                                        arquivos_processados_agora.append({
+                                            'id': cartao_info['id'],
+                                            'nome_sem_ext': nome_sem_ext,
+                                            'nome_original': cartao_info['name']
+                                        })
+                                        
+                                        # Delay de 12 segundos após processar cada cartão
+                                        if img_idx < len(imagens_para_processar):
+                                            print(f"⏳ Aguardando 12 segundos antes do próximo cartão...")
+                                            time.sleep(12)
                                         
                                     except Exception as e:
                                         print(f"   ❌ Erro: {e}")
                             
                             # 3. Mover arquivos processados no Drive para pasta correta (5º ou 9º ano)
-                            if mover_processados and ids_processados_agora:
-                                print(f"\n📦 Movendo {len(ids_processados_agora)} cartões para pasta de destino...")
+                            if mover_processados and arquivos_processados_agora:
+                                print(f"\n📦 Movendo {len(arquivos_processados_agora)} cartões para pasta de destino...")
                                 if pasta_destino_id:
+                                    ids_movidos = {item['id'] for item in arquivos_processados_agora}
                                     for cartao_info in novos_cartoes:
-                                        if cartao_info['id'] in ids_processados_agora:
+                                        if cartao_info['id'] in ids_movidos:
                                             mover_arquivo_no_drive(
                                                 drive_service,
                                                 cartao_info['id'],
@@ -4502,16 +4627,53 @@ if __name__ == "__main__":
                                                 cartao_info['name']
                                             )
                             
-                            # 4. Atualizar histórico com IDs processados
-                            arquivos_processados.update(ids_processados_agora)
-                            salvar_historico(arquivos_processados)
+                            # 4. Atualizar histórico com IDs e NOMES processados
+                            historico['ids'].update(item['id'] for item in arquivos_processados_agora)
+                            historico['nomes'].update(item['nome_sem_ext'] for item in arquivos_processados_agora)
+                            
+                            # Converter para formato de salvamento
+                            lista_para_salvar = [
+                                {
+                                    'id': arquivo_id,
+                                    'nome_sem_ext': nome_sem_ext,
+                                    'processado_em': datetime.now().isoformat()
+                                }
+                                for arquivo_id, nome_sem_ext in zip(
+                                    sorted(historico['ids']),
+                                    sorted(historico['nomes'])
+                                )
+                            ]
+                            
+                            # Reconstruir lista correta mantendo correspondência ID-Nome
+                            lista_correta = []
+                            for item in arquivos_processados_agora:
+                                lista_correta.append({
+                                    'id': item['id'],
+                                    'nome_sem_ext': item['nome_sem_ext'],
+                                    'processado_em': datetime.now().isoformat()
+                                })
+                            
+                            # Adicionar itens antigos do histórico
+                            if os.path.exists(historico_file):
+                                try:
+                                    with open(historico_file, 'r', encoding='utf-8') as f:
+                                        data_antiga = json.load(f)
+                                        arquivos_antigos = data_antiga.get('arquivos_processados', [])
+                                        if arquivos_antigos and isinstance(arquivos_antigos[0], dict):
+                                            for item_antigo in arquivos_antigos:
+                                                if item_antigo['id'] not in [x['id'] for x in lista_correta]:
+                                                    lista_correta.append(item_antigo)
+                                except:
+                                    pass
+                            
+                            salvar_historico(lista_correta)
                             
                             # Limpar pasta temporária
                             shutil.rmtree(pasta_temp, ignore_errors=True)
                             
                             print(f"\n✅ Processamento concluído!")
-                            print(f"📊 Novos processados: {len(ids_processados_agora)}")
-                            print(f"📝 Total no histórico: {len(arquivos_processados)}")
+                            print(f"📊 Novos processados: {len(arquivos_processados_agora)}")
+                            print(f"📝 Total no histórico: {len(historico['ids'])} IDs / {len(historico['nomes'])} Nomes")
                                 
                         except Exception as e:
                             print(f"❌ Erro durante processamento: {e}")

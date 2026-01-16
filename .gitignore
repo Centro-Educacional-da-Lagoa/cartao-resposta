@@ -77,9 +77,6 @@ logs/
 config_local.py
 settings_local.py
 
-# Arquivos PDF processados
-*.pdf
-
 # Backups
 *.bak
 *.backup

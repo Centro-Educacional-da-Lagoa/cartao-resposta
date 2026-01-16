@@ -331,6 +331,101 @@ def listar_arquivos_suportados(diretorio: str = ".") -> dict:
 # SEÇÃO 2: OMR - DETECÇÃO DE ALTERNATIVAS MARCADAS
 # ===========================================
 
+def calcular_preenchimento_real(gray, contorno) -> float:
+    """
+    🆕 CALCULA PREENCHIMENTO REAL DA BOLHA
+    Analisa pixels DENTRO do contorno para determinar % de área pintada
+    """
+    # Criar máscara do contorno
+    mask = np.zeros(gray.shape, dtype=np.uint8)
+    cv2.drawContours(mask, [contorno], -1, 255, -1)
+    
+    # Pegar apenas pixels dentro do contorno
+    pixels_contorno = cv2.bitwise_and(gray, gray, mask=mask)
+    pixels_validos = pixels_contorno[mask == 255]
+    
+    if len(pixels_validos) == 0:
+        return 0.0
+    
+    # Contar pixels escuros (< 180 = pintados)
+    pixels_pintados = np.sum(pixels_validos < 180)
+    percentual = (pixels_pintados / len(pixels_validos)) * 100
+    
+    return percentual
+
+def analisar_qualidade_marcacao(gray, contorno) -> dict:
+    """
+    🆕 ANÁLISE AVANÇADA DE MARCAÇÃO
+    Retorna múltiplas métricas para validação rigorosa
+    """
+    # Calcular métricas básicas
+    area = cv2.contourArea(contorno)
+    perimetro = cv2.arcLength(contorno, True)
+    circularidade = 4 * np.pi * area / (perimetro * perimetro) if perimetro > 0 else 0
+    
+    # Bounding box
+    x, y, w, h = cv2.boundingRect(contorno)
+    aspect_ratio = w / h if h > 0 else 0
+    
+    # Intensidade média
+    mask = np.zeros(gray.shape, dtype=np.uint8)
+    cv2.drawContours(mask, [contorno], -1, 255, -1)
+    intensidade_media = cv2.mean(gray, mask=mask)[0]
+    
+    # Preenchimento real
+    preenchimento = calcular_preenchimento_real(gray, contorno)
+    
+    # Desvio padrão (uniformidade da marcação)
+    pixels_contorno = gray[mask == 255]
+    desvio_padrao = np.std(pixels_contorno) if len(pixels_contorno) > 0 else 0
+    
+    return {
+        'area': area,
+        'circularidade': circularidade,
+        'aspect_ratio': aspect_ratio,
+        'intensidade': intensidade_media,
+        'preenchimento': preenchimento,
+        'desvio_padrao': desvio_padrao,
+        'centro': (x + w//2, y + h//2),
+        'contorno': contorno
+    }
+
+def eh_marcacao_valida(metricas: dict, debug: bool = False) -> tuple: #Nessa área a gente coloca como universal a validação da área, circularidade, aspect raiot, intensidade, preenchimento e uniformidade das bolhas. Caso queira que o bot pegue mais ou menos bolhas, o ajuste tem que ser feito por aqui
+    """
+    🆕 VALIDAÇÃO RIGOROSA DE MARCAÇÃO
+    Retorna (é_válida, motivo_rejeição)
+    """
+    motivos_rejeicao = []
+    
+    # 1️⃣ ÁREA: Entre 80-2000 pixels (mais permissivo para círculos maiores)
+    if not (60 <= metricas['area'] <= 2000):
+        motivos_rejeicao.append(f"Área fora do padrão ({metricas['area']:.0f}px)") #Aqui regula o total de pixel junto que o bot vai determinar se é uma marcação ou não
+    
+    # 2️⃣ CIRCULARIDADE: > 0.12 (mais permissivo para círculos pintados à mão)
+    if metricas['circularidade'] < 0.12:
+        motivos_rejeicao.append(f"Baixa circularidade ({metricas['circularidade']:.2f})") #Circularidade da bolha, quanto mais próximo de 1, mais circular é a bolha.
+    
+    # 3️⃣ ASPECT RATIO: Entre 0.20-1.6 (aceitar formas levemente alongadas)
+    if not (0.18 <= metricas['aspect_ratio'] <= 1.6):
+        motivos_rejeicao.append(f"Forma não circular (ratio={metricas['aspect_ratio']:.2f})") #alongamento da bolha, quanto mais próximo de 1, mais circular é a bolha.
+    
+    # 4️⃣ INTENSIDADE: < 140 (mais permissivo para marcações com caneta)
+    if metricas['intensidade'] >= 140:
+        motivos_rejeicao.append(f"Intensidade alta ({metricas['intensidade']:.0f})") #Determina quão escura tem que ser a marcação, quanto menor o valor, mais escura é a marcação.
+    
+    # 5️⃣ PREENCHIMENTO: > 12% (mais permissivo para círculos pintados)
+    if metricas['preenchimento'] < 12:
+        motivos_rejeicao.append(f"Preenchimento baixo ({metricas['preenchimento']:.1f}%)") #Percentual de preenchimento real da bolha, quanto maior o valor, mais preenchida está a bolha. Valores menores podem dar falsos positivos
+    
+    # 6️⃣ UNIFORMIDADE: Desvio padrão < 65 (mais permissivo para marcação manual)
+    if metricas['desvio_padrao'] > 65:
+        motivos_rejeicao.append(f"Marcação irregular (dp={metricas['desvio_padrao']:.1f})") #Desvio padrão da intensidade dos pixels, quanto menor, mais uniforme é a marcação.
+    
+    eh_valida = len(motivos_rejeicao) == 0
+    motivo = " | ".join(motivos_rejeicao) if motivos_rejeicao else "OK"
+    
+    return eh_valida, motivo
+
 def salvar_debug_deteccao(image_path: str, bolhas_pintadas: list, crop: np.ndarray) -> None:
     """
     Salva imagem de debug com as bolhas detectadas marcadas em verde.
@@ -607,7 +702,7 @@ def detectar_respostas_52_questoes(image_path: str, debug: bool = False, eh_gaba
         # ALUNOS: Crop mais amplo (marcações manuais podem variar)
         # Altura: 58% a 96% (mais tolerante para capturar marcações em diferentes posições)
         # Largura: 2% a 98% (margens mínimas para não perder marcações nas bordas)
-        crop = img_cv[int(height*0.62):int(height*0.96), int(width*0.02):int(width*0.98)]
+        crop = img_cv[int(height*0.59):int(height*0.98), int(width*0.02):int(width*0.98)]
     
     # Converter para escala de cinza
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
@@ -623,67 +718,40 @@ def detectar_respostas_52_questoes(image_path: str, debug: bool = False, eh_gaba
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
     
-    area_min = 150
-    intensity_max = 35
     # Encontrar contornos
     contornos, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
+    # 🆕 EXTRAIR BOLHAS COM ANÁLISE AVANÇADA
     bolhas_pintadas = []
+    total_bolhas_validas = 0
+    total_bolhas_rejeitadas = 0
     
-    for cnt in contornos:
-        area = cv2.contourArea(cnt)
+    crop_height, crop_width = gray.shape
+    
+    for contour in contornos:
+        metricas = analisar_qualidade_marcacao(gray, contour)
+        cx, cy = metricas['centro']
         
-        # PARÂMETROS MENOS RIGOROSOS - Detecta mais bolhas
-        if 80 < area < 1200: 
-            perimeter = cv2.arcLength(cnt, True)
-            if perimeter > 0:
-                circularity = 4 * np.pi * area / (perimeter * perimeter)
-                
-
-                if circularity > 0.15: 
-                    x, y, w, h = cv2.boundingRect(cnt)
-                    aspect_ratio = float(w) / h
-                    
-                    if 0.3 <= aspect_ratio <= 5.0:  # Aceita formas bem alongadas
-                        # Calcular centro
-                        M = cv2.moments(cnt)
-                        if M["m00"] != 0:
-                            cx = int(M["m10"] / M["m00"])
-                            cy = int(M["m01"] / M["m00"])
-                            
-                            # Verificar se está na região das questões
-                            crop_height, crop_width = crop.shape[:2]
-                            if (20 < cx < crop_width - 20 and 20 < cy < crop_height - 20):
-                                
-                                # MELHORIA: Verificar densidade de pixels escuros na bolha
-                                mask = np.zeros(gray.shape, dtype=np.uint8)
-                                cv2.drawContours(mask, [cnt], -1, 255, -1)
-                                intensidade_media = cv2.mean(gray, mask=mask)[0]
-                                
-                                # Calcular percentual de pixels escuros na bolha
-                                pixels_escuros = cv2.countNonZero(cv2.bitwise_and(thresh, mask))
-                                percentual_preenchimento = pixels_escuros / area
-                                
-                                # CRITÉRIOS MENOS RIGOROSOS - Aceita mais marcações
-                                aceita = False
-                                
-                                # CRITÉRIOS MENOS RIGOROSOS - Aceita mais marcações
-                                aceita = False
-                                
-                                # 1) Marcação escura com preenchimento mínimo
-                                if intensidade_media < 40 and percentual_preenchimento > 0.15:
-                                    aceita = True
-                                
-                                # 2) Contornos circulares pouco preenchidos
-                                elif circularity > 0.15 and 0.08 <= percentual_preenchimento <= 0.95 and intensidade_media < intensity_max + 30:
-                                    aceita = True
-                                
-                                # 3) Marcação grande/grossa
-                                elif area > area_min * 2 and intensidade_media < intensity_max + 30 and percentual_preenchimento > 0.15:
-                                    aceita = True
-                                
-                                if aceita:
-                                    bolhas_pintadas.append((cx, cy, cnt, intensidade_media, area, circularity, percentual_preenchimento))
+        # Verificar se está na região das questões
+        if not (20 < cx < crop_width - 20 and 20 < cy < crop_height - 20):
+            continue
+        
+        # Validação rigorosa
+        eh_valida, motivo = eh_marcacao_valida(metricas, debug)
+        
+        if not eh_valida:
+            total_bolhas_rejeitadas += 1
+            continue
+        
+        total_bolhas_validas += 1
+        bolhas_pintadas.append((cx, cy, metricas['contorno'], metricas['intensidade'], 
+                                metricas['area'], metricas['circularidade'], metricas['preenchimento']))
+    
+    if debug or eh_gabarito:
+        print(f"\n📊 Análise de Bolhas (52 questões):")
+        print(f"   ✅ Válidas: {total_bolhas_validas}")
+        if total_bolhas_validas + total_bolhas_rejeitadas > 0:
+            print(f"   📈 Taxa de aceitação: {total_bolhas_validas/(total_bolhas_validas+total_bolhas_rejeitadas)*100:.1f}%\n")
     
     if debug:
         salvar_debug_deteccao(image_path, bolhas_pintadas, crop)
@@ -721,6 +789,7 @@ def detectar_respostas_52_questoes(image_path: str, debug: bool = False, eh_gaba
     # 4) Para CADA coluna, processar as questões
     letras = ['a', 'b', 'c', 'd']
     respostas_finais = ['?'] * 52
+
 
     for col_idx, bolhas_coluna in enumerate(bolhas_por_coluna):
         if not bolhas_coluna:
@@ -804,7 +873,7 @@ def detectar_respostas_52_questoes(image_path: str, debug: bool = False, eh_gaba
         
         # AJUSTE ESPECÍFICO PARA COLUNA 3 (índice 2)
         if col_idx == 2:
-            tolerancia_multiplicador = 2.5  # Muito mais flexível para coluna 3
+            tolerancia_multiplicador = 1.5  # Muito mais flexível para coluna 3
             if debug:
                 print(f"🔧 Coluna 3: Usando tolerância aumentada ({tolerancia_multiplicador}x)")
         else:
@@ -900,7 +969,7 @@ def detectar_respostas_52_questoes(image_path: str, debug: bool = False, eh_gaba
                         for i in range(len(centros_ordenados)):
                             if i == 0:
                                 # Primeira alternativa (A): desde o início até meio do caminho para B
-                                limite_inferior = 0
+                                limite_inferior = 50
                                 limite_superior = (centros_ordenados[0] + centros_ordenados[1]) / 2 if len(centros_ordenados) > 1 else centros_ordenados[0] + 50
                             elif i == len(centros_ordenados) - 1:
                                 # Última alternativa (D): desde meio do caminho de C até o fim
@@ -912,7 +981,6 @@ def detectar_respostas_52_questoes(image_path: str, debug: bool = False, eh_gaba
                                 limite_superior = (centros_ordenados[i] + centros_ordenados[i+1]) / 2
                             
                             zonas.append((limite_inferior, limite_superior))
-                        
                         # Verificar em qual ZONA a bolha marcada está
                         for idx, (lim_inf, lim_sup) in enumerate(zonas):
                             if lim_inf <= cx < lim_sup:
@@ -951,10 +1019,10 @@ def detectar_respostas_44_questoes(image_path: str, debug: bool = False, eh_gaba
     # CROPS ESPECÍFICOS PARA CARTÕES DE 44 QUESTÕES
     if eh_gabarito:
         # GABARITO: Crop mais centralizado (impressão limpa e consistente)
-        crop = img_cv[int(height*0.60):int(height*0.92), int(width*0.02):int(width*0.98)]
+        crop = img_cv[int(height*0.59):int(height*0.93), int(width*0.02):int(width*0.98)]
     else:
         # ALUNOS: Crop mais amplo (marcações manuais podem variar)
-        crop = img_cv[int(height*0.60):int(height*0.92), int(width*0.02):int(width*0.98)]
+        crop = img_cv[int(height*0.58):int(height*0.96), int(width*0.02):int(width*0.98)]
     
     # Converter para escala de cinza
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
@@ -973,61 +1041,37 @@ def detectar_respostas_44_questoes(image_path: str, debug: bool = False, eh_gaba
     # Encontrar contornos
     contornos, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
+    # 🆕 EXTRAIR BOLHAS COM ANÁLISE AVANÇADA
     bolhas_pintadas = []
+    total_bolhas_validas = 0
+    total_bolhas_rejeitadas = 0
     
-    for cnt in contornos:
-        area = cv2.contourArea(cnt)
+    crop_height, crop_width = gray.shape
+    
+    for contour in contornos:
+        metricas = analisar_qualidade_marcacao(gray, contour)
+        cx, cy = metricas['centro']
         
-        # PARÂMETROS MENOS RIGOROSOS - Detecta mais bolhas
-        if 80 < area < 1500:
-            # Verificar se tem formato aproximadamente circular/oval (bem flexível)
-            perimeter = cv2.arcLength(cnt, True)
-            if perimeter > 0:
-                circularity = 4 * np.pi * area / (perimeter * perimeter)
-                
-                # CIRCULARIDADE BEM FLEXÍVEL - Aceita formas irregulares
-                if circularity > 0.18:
-                    # Verificar aspect ratio bem flexível
-                    x, y, w, h = cv2.boundingRect(cnt)
-                    aspect_ratio = float(w) / h
-                    
-                    if 0.2 <= aspect_ratio <= 5.0:
-                        # Calcular centro
-                        M = cv2.moments(cnt)
-                        if M["m00"] != 0:
-                            cx = int(M["m10"] / M["m00"])
-                            cy = int(M["m01"] / M["m00"])
-                            
-                            # Verificar se está na região das questões
-                            crop_height, crop_width = crop.shape[:2]
-                            if (20 < cx < crop_width - 20 and 20 < cy < crop_height - 20):
-                                
-                                # MELHORIA: Verificar densidade de pixels escuros na bolha
-                                mask = np.zeros(gray.shape, dtype=np.uint8)
-                                cv2.drawContours(mask, [cnt], -1, 255, -1)
-                                intensidade_media = cv2.mean(gray, mask=mask)[0]
-                                
-                                # Calcular percentual de pixels escuros na bolha
-                                pixels_escuros = cv2.countNonZero(cv2.bitwise_and(thresh, mask))
-                                percentual_preenchimento = pixels_escuros / area
-                                
-                                # CRITÉRIOS MENOS RIGOROSOS - Aceita mais marcações
-                                aceita = False
-                                
-                                # 1) Marcação escura com preenchimento mínimo
-                                if intensidade_media < 35 and percentual_preenchimento > 0.5:
-                                    aceita = True
-                                
-                                # 2) Contornos circulares pouco preenchidos
-                                elif circularity > 0.4 and 0.2 <= percentual_preenchimento <= 0.8 and intensidade_media < 45:
-                                    aceita = True
-                                
-                                # 3) Marcação grande/grossa
-                                elif area > 120 and intensidade_media < 90 and percentual_preenchimento > 0.10:
-                                    aceita = True
-                                
-                                if aceita:
-                                    bolhas_pintadas.append((cx, cy, cnt, intensidade_media, area, circularity, percentual_preenchimento))
+        # Verificar se está na região das questões
+        if not (20 < cx < crop_width - 20 and 20 < cy < crop_height - 20):
+            continue
+        
+        # Validação rigorosa
+        eh_valida, motivo = eh_marcacao_valida(metricas, debug)
+        
+        if not eh_valida:
+            total_bolhas_rejeitadas += 1
+            continue
+        
+        total_bolhas_validas += 1
+        bolhas_pintadas.append((cx, cy, metricas['contorno'], metricas['intensidade'], 
+                                metricas['area'], metricas['circularidade'], metricas['preenchimento']))
+    
+    if debug or eh_gabarito:
+        print(f"\n📊 Análise de Bolhas (44 questões):")
+        print(f"   ✅ Válidas: {total_bolhas_validas}")
+        if total_bolhas_validas + total_bolhas_rejeitadas > 0:
+            print(f"   📈 Taxa de aceitação: {total_bolhas_validas/(total_bolhas_validas+total_bolhas_rejeitadas)*100:.1f}%\n")
     
     if debug:
         salvar_debug_deteccao(image_path, bolhas_pintadas, crop)
@@ -1135,7 +1179,7 @@ def detectar_respostas_44_questoes(image_path: str, debug: bool = False, eh_gaba
         else:
             continue
         
-        # AJUSTE ESPECÍFICO PARA COLUNA 3 (índice 2)
+        # AJUSTE ESPECÍFICO PARA AS COLUNAS
         if col_idx == 0:
             tolerancia_multiplicador = 2.5  
         else:
@@ -1232,7 +1276,7 @@ def detectar_respostas_44_questoes(image_path: str, debug: bool = False, eh_gaba
                         for i in range(len(centros_ordenados)):
                             if i == 0:
                                 # Primeira alternativa (A): desde o início até meio do caminho para B
-                                limite_inferior = 0
+                                limite_inferior = 50
                                 limite_superior = (centros_ordenados[0] + centros_ordenados[1]) / 2 if len(centros_ordenados) > 1 else centros_ordenados[0] + 50
                             elif i == len(centros_ordenados) - 1:
                                 # Última alternativa (D): desde meio do caminho de C até o fim
@@ -1299,11 +1343,11 @@ def detectar_respostas_universal(image_path: str, debug: bool = False) -> list:
     num_bolhas = 0
     for cnt in contornos:
         area = cv2.contourArea(cnt)
-        if 80 < area < 1500:
+        if 50 < area < 1500:
             perimeter = cv2.arcLength(cnt, True)
             if perimeter > 0:
                 circularity = 4 * np.pi * area / (perimeter * perimeter)
-                if circularity > 0.10:  # ↓ 0.10 (era 0.25) - MUITO MAIS FLEXÍVEL
+                if circularity > 0.25:  # ↓ 0.10 (era 0.25) - MUITO MAIS FLEXÍVEL
                     num_bolhas += 1
     
     # Decidir qual função usar baseado no número de bolhas detectadas
@@ -1438,6 +1482,8 @@ def extrair_cabecalho_com_gemini(model, image_path: str) -> Optional[dict]:
         - Se alguma informação não estiver visível ou legível, retorne "N/A"
         - Seja preciso na leitura dos textos
         - Ignore títulos como "AVALIAÇÃO DIAGNÓSTICA", "CARTÃO-RESPOSTA", etc.
+        - Ignore nomes como flamengo, santos, etc. (Todo e qualquer nome de time deve ser ignorado)
+        - Nomes de personagens fictícios também deverão ser ignorados. (Naruto, Goku, etc.)
 
         FORMATO DE RESPOSTA (retorne exatamente neste formato JSON):
         {
@@ -1474,11 +1520,11 @@ def extrair_cabecalho_com_gemini(model, image_path: str) -> Optional[dict]:
                 return None
                 
         except Exception as e:
-            print(f"❌ Erro ao processar JSON do Gemini: {e}")
+            print(f"❌ Erro ao processar JSON do Gemini")
             return None
             
     except Exception as e:
-        print(f"❌ Erro na extração do cabeçalho com Gemini: {e}")
+        print(f"❌ Erro na extração do cabeçalho com Gemini")
         return None
 
 def extrair_cabecalho_com_ocr_fallback(image_path: str) -> dict:
@@ -1492,6 +1538,8 @@ def extrair_cabecalho_com_ocr_fallback(image_path: str) -> dict:
         Dicionário com chaves 'escola', 'aluno', 'turma', 'nascimento' (pode conter 'N/A')
     """
     try:
+        print("🔍 Usando OCR fallback com pré-processamento avançado...")
+        
         # Carregar imagem
         img = cv2.imread(image_path)
         if img is None:
@@ -1500,16 +1548,60 @@ def extrair_cabecalho_com_ocr_fallback(image_path: str) -> dict:
             
         # Converter para escala de cinza
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        height, width = gray.shape
         
-        # Pegar apenas a parte superior da imagem (cabeçalho)
-        height = gray.shape[0]
-        header_region = gray[0:int(height * 0.3)]  # 30% superior
+        # Pegar apenas a parte superior da imagem (cabeçalho - 25%)
+        header_region = gray[0:int(height * 0.25)]
         
-        # Melhorar contraste para OCR
-        header_region = cv2.threshold(header_region, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        # ═══════════════════════════════════════════════════════════
+        # PRÉ-PROCESSAMENTO AVANÇADO PARA MELHORAR OCR
+        # ═══════════════════════════════════════════════════════════
         
-        # Extrair texto
-        texto_completo = pytesseract.image_to_string(header_region, lang='por', config='--psm 6')
+        # 1. Redimensionar se a imagem for muito pequena (aumentar para pelo menos 2000px de largura)
+        if header_region.shape[1] < 2000:
+            scale = 2000 / header_region.shape[1]
+            new_width = int(header_region.shape[1] * scale)
+            new_height = int(header_region.shape[0] * scale)
+            header_region = cv2.resize(header_region, (new_width, new_height), interpolation=cv2.INTER_CUBIC)
+        
+        # 2. Aplicar denoising (remover ruído)
+        header_region = cv2.fastNlMeansDenoising(header_region, h=10)
+        
+        # 3. Equalização de histograma para melhorar contraste
+        header_region = cv2.equalizeHist(header_region)
+        
+        # 4. Binarização adaptativa (melhor que threshold simples)
+        header_region = cv2.adaptiveThreshold(
+            header_region, 
+            255, 
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY, 
+            21, 
+            10
+        )
+        
+        # 5. Operações morfológicas para limpar a imagem
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        header_region = cv2.morphologyEx(header_region, cv2.MORPH_CLOSE, kernel)
+        
+        # ═══════════════════════════════════════════════════════════
+        # EXTRAIR TEXTO COM MÚLTIPLAS TENTATIVAS
+        # ═══════════════════════════════════════════════════════════
+        
+        # Configuração otimizada para Tesseract
+        custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÀÁÂÃÇÉÊÍÓÔÕÚàáâãçéêíóôõú0123456789/:- '
+        
+        texto_completo = pytesseract.image_to_string(
+            header_region, 
+            lang='por',
+            config=custom_config
+        )
+        
+        # Limpar texto extraído
+        texto_completo = texto_completo.strip()
+        
+        # Debug: mostrar texto extraído
+        print(f"📄 Texto OCR extraído:\n{texto_completo[:200] if len(texto_completo) > 200 else texto_completo}...")
         
         # Processar texto extraído
         linhas = texto_completo.split('\n')
@@ -1520,49 +1612,107 @@ def extrair_cabecalho_com_ocr_fallback(image_path: str) -> dict:
             "nascimento": "N/A"
         }
         
-        # Procurar padrões no texto
-        for linha in linhas:
-            linha = linha.strip()
-            if not linha:
-                continue
-                
-            linha_lower = linha.lower()
-            
-            # Procurar escola
-            if any(palavra in linha_lower for palavra in ['escola', 'colégio', 'instituto', 'centro']):
-                if 'escola' in linha_lower or 'colégio' in linha_lower:
-                    dados["escola"] = linha
-                    
-            # Procurar nome do aluno  
-            if any(palavra in linha_lower for palavra in ['nome', 'aluno']):
-                # Pular se for apenas o rótulo
-                if len(linha) > 10 and not linha_lower.startswith('nome'):
-                    dados["aluno"] = linha
-                    
-            # Procurar turma
-            if any(palavra in linha_lower for palavra in ['turma', 'série', 'ano']):
-                # Extrair números da linha
-                numeros = re.findall(r'\d+', linha)
-                if numeros:
-                    dados["turma"] = numeros[0]
-                    
-            # Procurar data de nascimento
-            if any(palavra in linha_lower for palavra in ['nascimento', 'data']):
-                # Procurar padrão de data
-                data_match = re.search(r'\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}', linha)
-                if data_match:
-                    dados["nascimento"] = data_match.group()
+        # ═══════════════════════════════════════════════════════════
+        # EXTRAIR DADOS COM LÓGICA MELHORADA
+        # ═══════════════════════════════════════════════════════════
         
-        print(f"✅ OCR extraiu dados básicos")
+        for i, linha in enumerate(linhas):
+            linha = linha.strip()
+            if not linha or len(linha) < 2:
+                continue
+            
+            # Limpar linha de caracteres estranhos
+            linha_limpa = re.sub(r'[^\w\sÀ-ÿ/:-]', '', linha)
+            linha_lower = linha_limpa.lower()
+            
+            # 1. ESCOLA - procurar linha com "escola" e pegar próxima linha se necessário
+            if 'escola' in linha_lower or 'colegio' in linha_lower or 'colégio' in linha_lower:
+                # Se a linha tem apenas o label, pegar próxima linha
+                if len(linha_limpa) < 15 and i + 1 < len(linhas):
+                    dados["escola"] = linhas[i + 1].strip()
+                else:
+                    # Remover o label "Escola:" se presente
+                    escola = re.sub(r'(?i)escola\s*:?\s*', '', linha_limpa).strip()
+                    if len(escola) > 3:
+                        dados["escola"] = escola
+            
+            # 2. NOME DO ALUNO - procurar linha com "nome" ou "completo"
+            elif any(palavra in linha_lower for palavra in ['nome', 'completo']) and 'escola' not in linha_lower:
+                # Se a linha tem apenas o label, pegar próxima linha
+                if len(linha_limpa) < 15 and i + 1 < len(linhas):
+                    proximo = linhas[i + 1].strip()
+                    # Validar que não é data nem número
+                    if not re.match(r'^\d+[/\-]', proximo) and len(proximo) > 5:
+                        dados["aluno"] = proximo
+                else:
+                    # Remover labels
+                    nome = re.sub(r'(?i)(nome|completo)\s*:?\s*', '', linha_limpa).strip()
+                    # Validar que parece um nome (tem letras, não é muito curto)
+                    if len(nome) > 5 and re.search(r'[a-zA-ZÀ-ÿ]{3,}', nome):
+                        # Remover números do nome
+                        nome = re.sub(r'\d+', '', nome).strip()
+                        if len(nome) > 3:
+                            dados["aluno"] = nome
+            
+            # 3. TURMA - procurar padrão de turma (número + letra opcional)
+            elif 'turma' in linha_lower or 'série' in linha_lower or 'ano' in linha_lower:
+                # Procurar padrão tipo "9A", "5 B", "7º ano"
+                match = re.search(r'(\d{1,2})\s*([A-Za-z])?', linha)
+                if match:
+                    turma = match.group(1)
+                    if match.group(2):
+                        turma += match.group(2).upper()
+                    dados["turma"] = turma
+            
+            # 4. DATA DE NASCIMENTO - procurar padrão de data
+            elif 'nascimento' in linha_lower or 'data' in linha_lower or re.search(r'\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}', linha):
+                # Procurar data DD/MM/YYYY ou DD/MM/YY
+                match = re.search(r'(\d{1,2})\s*[/\-]\s*(\d{1,2})\s*[/\-]\s*(\d{2,4})', linha)
+                if match:
+                    dia, mes, ano = match.groups()
+                    # Validar data
+                    if 1 <= int(dia) <= 31 and 1 <= int(mes) <= 12:
+                        if len(ano) == 2:
+                            ano = "20" + ano if int(ano) < 50 else "19" + ano
+                        dados["nascimento"] = f"{dia.zfill(2)}/{mes.zfill(2)}/{ano}"
+        
+        # ═══════════════════════════════════════════════════════════
+        # FALLBACK: Se não encontrou nome do aluno, tentar pegar maior linha de texto
+        # ═══════════════════════════════════════════════════════════
+        if dados["aluno"] == "N/A":
+            linhas_validas = []
+            for linha in linhas:
+                linha = linha.strip()
+                # Filtrar linhas que parecem ser nomes (só letras e espaços, tamanho razoável)
+                if (10 < len(linha) < 50 and 
+                    re.match(r'^[A-Za-zÀ-ÿ\s]+$', linha) and
+                    'escola' not in linha.lower() and
+                    'nome' not in linha.lower()):
+                    linhas_validas.append(linha)
+            
+            if linhas_validas:
+                # Pegar a linha mais longa que parece ser um nome
+                dados["aluno"] = max(linhas_validas, key=len)
+        
+        # Exibir resultado
+        print(f"✅ OCR extraiu:")
+        print(f"   🏫 Escola: {dados.get('escola', 'N/A')}")
+        print(f"   👤 Aluno: {dados.get('aluno', 'N/A')}")
+        print(f"   📚 Turma: {dados.get('turma', 'N/A')}")
+        print(f"   📅 Nascimento: {dados.get('nascimento', 'N/A')}")
+        
         return dados
         
     except Exception as e:
         print(f"❌ Erro no OCR fallback: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
-def extrair_cabecalho_com_fallback(model, image_path):
+def extrair_cabecalho_com_fallback(model, image_path, numero_aluno=None):
     """
-    Função principal que tenta Gemini primeiro, depois OCR como fallback
+    Função que tenta extrair dados com Gemini.
+    Se falhar, retorna N/A para todos os campos, exceto o nome do aluno que será numerado.
     """
     # Tentar Gemini primeiro
     if model:
@@ -1571,18 +1721,13 @@ def extrair_cabecalho_com_fallback(model, image_path):
             if dados_gemini:
                 return dados_gemini
         except Exception as e:
-            pass  # Silenciar erro do Gemini, usar OCR como fallback
+            pass  # Silenciar erro do Gemini
     
-    # Fallback para OCR
-    dados_ocr = extrair_cabecalho_com_ocr_fallback(image_path)
-    if dados_ocr:
-        return dados_ocr
-    
-    # Se tudo falhar, retornar dados vazios
-    print("❌ Ambos Gemini e OCR falharam")
+    # Se Gemini falhar, retornar dados com numeração do aluno
+    nome_aluno = f"Aluno {numero_aluno}" if numero_aluno else "N/A"
     return {
         "escola": "N/A",
-        "aluno": "N/A",
+        "aluno": nome_aluno,
         "turma": "N/A",
         "nascimento": "N/A"
     }
@@ -2644,7 +2789,7 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
             
             # Extrair dados do cabeçalho (opcional com Gemini)
             dados_aluno = {
-                "Aluno": os.path.splitext(aluno_file)[0],
+                "Aluno": f"Aluno {i}",
                 "Escola": "N/A",
                 "Nascimento": "N/A", 
                 "Turma": "N/A"
@@ -2652,7 +2797,7 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
             
             if usar_gemini and model_gemini:
                 try:
-                    dados_extraidos = extrair_cabecalho_com_fallback(model_gemini, aluno_img)
+                    dados_extraidos = extrair_cabecalho_com_fallback(model_gemini, aluno_img, numero_aluno=i)
                     if dados_extraidos:
                         # Mapear chaves minúsculas do Gemini para maiúsculas do sistema
                         mapeamento = {
@@ -2669,7 +2814,7 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
                         
                         print(f"✅ Dados extraídos: {dados_aluno['Aluno']} ({dados_aluno['Escola']})")
                 except Exception as e:
-                    print(f"⚠️ Gemini falhou, usando nome do arquivo")
+                    print(f"⚠️ Gemini falhou, usando numeração automática")
             
             # Detectar respostas do aluno usando o tipo específico (44 ou 52 questões)
             if "page_" in aluno_img and (aluno_img.endswith(".png") or aluno_img.endswith(".jpg")):
@@ -2712,7 +2857,7 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
             resultado_erro = {
                 "arquivo": aluno_file,
                 "dados_completos": {
-                    "Aluno": os.path.splitext(aluno_file)[0],
+                    "Aluno": f"Aluno {i}",
                     "Escola": "N/A",
                     "Nascimento": "N/A",
                     "Turma": "N/A"
@@ -2965,17 +3110,28 @@ def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False, num
             
             if usar_gemini and model_gemini:
                 try:
-                    dados_extraidos = extrair_cabecalho_com_fallback(model_gemini, aluno_img)
+                    dados_extraidos = extrair_cabecalho_com_fallback(model_gemini, aluno_img, numero_aluno=i)
                     if dados_extraidos:
-                        dados_aluno.update(dados_extraidos)
+                        # Mapear chaves minúsculas do Gemini para maiúsculas do sistema
+                        mapeamento = {
+                            "escola": "Escola",
+                            "aluno": "Aluno", 
+                            "turma": "Turma",
+                            "nascimento": "Nascimento"
+                        }
+                        
+                        for chave_gemini, chave_sistema in mapeamento.items():
+                            if chave_gemini in dados_extraidos and dados_extraidos[chave_gemini]:
+                                dados_aluno[chave_sistema] = dados_extraidos[chave_gemini]
+                        
                         print("✅ Dados extraídos pelo Gemini:")
-                        for campo, valor in dados_extraidos.items():
+                        for campo, valor in dados_aluno.items():
                             print(f"   📝 {campo}: {valor}")
                 except Exception as e:
                     print(f"⚠️ Erro no Gemini para {aluno_file}: {e}")
-                    dados_aluno["Aluno"] = os.path.splitext(aluno_file)[0]  # Usar nome do arquivo
+                    dados_aluno["Aluno"] = f"Aluno {i}"  # Usar numeração automática
             else:
-                dados_aluno["Aluno"] = os.path.splitext(aluno_file)[0]  # Usar nome do arquivo
+                dados_aluno["Aluno"] = f"Aluno {i}"  # Usar numeração automática
             
             # Detectar respostas do aluno usando o tipo específico (44 ou 52 questões)
             respostas_aluno = detectar_respostas_por_tipo(aluno_img, num_questoes=num_questoes, debug=debug_mode)
@@ -3011,7 +3167,7 @@ def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False, num
             # Adicionar resultado de erro
             resultado_erro = {
                 "arquivo": aluno_file,
-                "dados": {"Aluno": os.path.splitext(aluno_file)[0], "Erro": str(e)},
+                "dados": {"Aluno": f"Aluno {i}", "Erro": str(e)},
                 "respostas": ['?'] * 52,
                 "resultado": {"total": 52, "acertos": 0, "erros": 52, "percentual": 0.0},
                 "questoes_detectadas": 0
@@ -3202,7 +3358,7 @@ def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_ge
             
             # Extrair dados do cabeçalho (opcional com Gemini)
             dados_aluno = {
-                "Aluno": os.path.splitext(aluno_file)[0],
+                "Aluno": f"Aluno {i}",
                 "Escola": "N/A",
                 "Nascimento": "N/A", 
                 "Turma": "N/A"
@@ -3210,7 +3366,7 @@ def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_ge
             
             if usar_gemini and model_gemini:
                 try:
-                    dados_extraidos = extrair_cabecalho_com_fallback(model_gemini, aluno_img)
+                    dados_extraidos = extrair_cabecalho_com_fallback(model_gemini, aluno_img, numero_aluno=i)
                     if dados_extraidos:
                         # Mapear chaves minúsculas do Gemini para maiúsculas do sistema
                         mapeamento = {
@@ -3227,7 +3383,7 @@ def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_ge
                         
                         print(f"✅ Dados extraídos: {dados_aluno['Aluno']} ({dados_aluno['Escola']})")
                 except Exception as e:
-                    print(f"⚠️ Gemini falhou, usando nome do arquivo")
+                    print(f"⚠️ Gemini falhou, usando numeração automática")
             
             # Detectar respostas do aluno usando o tipo específico (44 ou 52 questões)
             respostas_aluno = detectar_respostas_por_tipo(aluno_img, num_questoes=num_questoes, debug=debug_mode)
@@ -3270,7 +3426,7 @@ def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_ge
             resultado_erro = {
                 "arquivo": aluno_file,
                 "dados_completos": {
-                    "Aluno": os.path.splitext(aluno_file)[0],
+                    "Aluno": f"Aluno {i}",
                     "Escola": "N/A",
                     "Nascimento": "N/A",
                     "Turma": "N/A"
@@ -3497,7 +3653,7 @@ def processar_pasta_gabaritos_com_sheets(
             
             # Extrair dados do cabeçalho (opcional com Gemini)
             dados_aluno = {
-                "Aluno": os.path.splitext(aluno_file)[0],
+                "Aluno": f"Aluno {i}",
                 "Escola": "N/A",
                 "Nascimento": "N/A", 
                 "Turma": "N/A"
@@ -3505,7 +3661,7 @@ def processar_pasta_gabaritos_com_sheets(
             
             if usar_gemini and model_gemini:
                 try:
-                    dados_extraidos = extrair_cabecalho_com_fallback(model_gemini, aluno_img)
+                    dados_extraidos = extrair_cabecalho_com_fallback(model_gemini, aluno_img, numero_aluno=i)
                     if dados_extraidos:
                         # Mapear chaves minúsculas do Gemini para maiúsculas do sistema
                         mapeamento = {
@@ -3522,7 +3678,7 @@ def processar_pasta_gabaritos_com_sheets(
                         
                         print(f"✅ Dados extraídos: {dados_aluno['Aluno']} ({dados_aluno['Escola']})")
                 except Exception as e:
-                    print(f"⚠️ Gemini falhou, usando nome do arquivo")
+                    print(f"⚠️ Gemini falhou, usando numeração automática")
             
             # Detectar respostas do aluno usando o tipo específico (44 ou 52 questões)
             respostas_aluno = detectar_respostas_por_tipo(aluno_img, num_questoes=num_questoes, debug=debug_mode)
@@ -3589,7 +3745,7 @@ def processar_pasta_gabaritos_com_sheets(
             resultado_erro = {
                 "arquivo": aluno_file,
                 "dados_completos": {
-                    "Aluno": os.path.splitext(aluno_file)[0],
+                    "Aluno": f"Aluno {i}",
                     "Escola": "N/A",
                     "Nascimento": "N/A",
                     "Turma": "N/A"

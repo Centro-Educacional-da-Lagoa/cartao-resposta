@@ -25,9 +25,9 @@
 ```bash
 ## 📊 Formato do Google Sheets
 
-| Data/Hora  | Escola | Aluno  | Nascimento | Turma | Acertos | Erros  | Questoes anuladas | Porcentagem |
-|------------|--------|--------|------------|-------|---------|------- |-------------------|-------------|
-| 25/09/2025 |   ABC  | João   | 15/03/2005 |  902  |    42   |    10  |        0          |   80.8%     |
+| Data/Hora  | Escola |  Aluno | Nascimento | Turma | Acertos Língua portuguesa | Acertos Matemática | Erros Lingua portuguesa | Erros Matemática  | Questoes anuladas | Porcentagem |
+|------------|--------|--------|------------|-------|---------------------------|--------------------|-------------------------|-------------------|-------------------|-------------|
+| 25/09/2025 |   Cel  |  Alan  | 41/01/2019 |  501  |             11            |        5           |           11            |        16         |         1         |     37.2%   |
 
 ```
 

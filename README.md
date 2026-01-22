@@ -175,13 +175,7 @@ tesseract --version
 
 ## 🎮 Como Usar
 
-### Modo Local para ler de forma única os cartões disponível na pasta do drive
-
-```bash
-python script.py
-```
-
-### Modo monitor para ler de forma contínua e automática os cartões-resposta dentro da pasta
+### Modo monitor para ler de forma contínua e automática os gabaritos e cartões-resposta dentro da pasta
 
 OBS: No modo Monitor, o sistema cria automaticamente o arquivo historico_monitoramento.json. Nesse arquivo são salvos os IDs de todos os cartões que já foram lidos, garantindo que o bot não leia o mesmo cartão mais de uma vez.
 
@@ -197,39 +191,55 @@ O sistema irá ler automaticamente a pasta `Cartao-resposta`,
 processar todos os arquivos e enviar para o Google Sheets.
 
 Fluxo completo:
-1. Detectar automaticamente gabarito e alunos
-2. Processar todos os cartões
-3. Enviar resultados para Google Sheets
-4. Mover os cartões para a pasta de acordo com a série
-5. Mostrar relatório final dentro das planilhas
+1. Jogar todos os arquivos dentro da pasta principal do bot
+2. Detectar automaticamente gabaritos e alunos, podendo jogar 2 gabaritos de uma vez e todos os cartões-respostas
+2. Processa todos os cartões do 5° e 9° ano via IA e OCR
+3. Enviar resultados para Google Sheets e pastas de acordo com o ano detectado
+
+OBS: O gabarito sempre tem que ter os seguintes critérios
+gabarito44.jpg | gabarito_44.jpg | gabarito44.png | gabarito_44.png
+gabarito52.jpg | gabarito_52.jpg | gabarito52.png | gabarito_52.png
 
 
 
-O script irá baixar todos os arquivos permitidos daquela pasta do Drive para
-um diretório temporário, processar os cartões e remover os arquivos no final.
+O script irá baixar todos os arquivos permitidos daquela pasta do Drive para um diretório temporário, processar os cartões e remover os arquivos no final.
 
 
 
 ### Exemplo de Saída
 
 ```
-📄 Enviando para planilha de 52 questões...
-📊 Registro adicionado:
-   🏫 Escola: E. M. João Francisco Braz
-   👤 Aluno: Vitória Ferreira
-   📅 Nascimento: 10/08/2010
-   📚 Turma: 9° ano
-   📊 Resultado: 16 acertos | 36 erros | 30.8%
+PREPROCESSANDO ARQUIVO ALUNO_2: alanteste44_pb.jpeg
+   ✅ Gemini detectou: 5° ano (44 questões)
+   ✅ Gemini detectou com sucesso: 44 questões
+   🔍 DEBUG - Dados extraídos: Escola=Col Intercultural School, Aluno=ALAN Oliveira Santos, Turma=501, Nasc=31/01/2019
+   📁 Destino: Pasta 5° ano (44 questões)
+
+────────────────────────────────────────────────────────────
+👤 ALAN Oliveira Santos
+📚 Turma: 501 | Escola: Col Intercultural School
+✅ Acertos: 16
+❌ Erros: 27
+📊 Percentual: 37.2%
+
+📝 Respostas:
 
 📋 GABARITO DAS QUESTÕES:
 ==============================
-1-D  2-C  3-A  4-D  5-C  6-A  7-A  8-C  9-A  10-D
-11-A  12-A  13-B  14-D  15-B  16-D  17-A  18-A  19-A  20-D
-21-A  22-C  23-D  24-A  25-A  26-D  27-B  28-C  29-D  30-A
-31-B  32-B  33-B  34-C  35-C  36-B  37-A  38-D  39-C  40-D
-41-D  42-A  43-B  44-C  45-C  46-B  47-A  48-B  49-C  50-D
-51-C  52-D
+1-a  2-b  3-a  4-c  5-c  6-d  7-b  8-d  9-c  10-a
+11-d  12-a  13-b  14-c  15-d  16-c  17-b  18-a  19-b  20-b
+21-c  22-b  23-a  24-a  25-b  26-a  27-b  28-c  29-b  30-d
+31-c  32-d  33-b  34-b  35-a  36-b  37-c  38-c  39-c  40-b
+41-a  42-b  43-d  44-c
 ==============================
+────────────────────────────────────────────────────────────
+📄 Enviando para planilha de 44 questões...
+📊 Registro adicionado:
+   🏫 Escola: col intercultural school
+   👤 Aluno: alan oliveira santos
+   📅 Nascimento: 31/01/2019
+   📚 Turma: 501
+   📊 Resultado: ✓ 11PT/5MT | ✗ 11PT/16MT | 1 anuladas | 37.2%
 ```
 
 ### Customização no Código
@@ -239,9 +249,9 @@ um diretório temporário, processar os cartões e remover os arquivos no final.
 ## 📊 Formato do Google Sheets
 
 
-| Data/Hora  | Escola | Aluno  | Nascimento | Turma | Acertos | Erros  | Questoes anuladas | Porcentagem |
-|------------|--------|--------|------------|-------|---------|------- |-------------------|-------------|
-| 25/09/2025 |   ABC  | João   | 15/03/2005 |  902  |    42   |    10  |        0          |   80.8%     |
+| Data/Hora  | Escola |  Aluno | Nascimento | Turma | Acertos Língua portuguesa | Acertos Matemática | Erros Lingua portuguesa | Erros Matemática  | Questoes anuladas | Porcentagem |
+|------------|--------|--------|------------|-------|---------------------------|--------------------|-------------------------|-------------------|-------------------|-------------|
+| 25/09/2025 |   Cel  |  Alan  | 41/01/2019 |  501  |             11            |        5           |           11            |        16         |         1         |     37.2%   |
 
 ## 🐛 Solução de Problemas
 
@@ -272,5 +282,4 @@ echo $GEMINI_API_KEY
 - Verificar qualidade das imagens (mínimo 300 DPI)
 - Garantir boa iluminação e contraste
 - Evitar sombras ou reflexos
-- Usar modo debug para analisar detecções
 

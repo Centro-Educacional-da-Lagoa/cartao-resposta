@@ -2000,8 +2000,9 @@ def detectar_ano_com_ocr_direto(image_path: str, debug: bool = False) -> int:
             return 52
         
         # PADRÃO: Se nada for detectado, usar 52 questões (9° ano)
-        print(f"   ⚠️ OCR (FALLBACK): Não conseguiu detectar '5° ano' ou '9° ano' no cabeçalho")
+        print(f"   ⚠️ OCR (FALLBACK ATIVO): Não conseguiu detectar '5° ano' ou '9° ano' no cabeçalho")
         print(f"   ℹ️  Texto detectado: '{texto_limpo[:100]}'")  # Mostrar primeiros 100 chars
+        print(f"   💡 Quando houver múltiplos cartões, o destino será determinado pela MAIORIA")
         print(f"   🎯 Usando padrão: 52 questões (9° ano)")
         return 52
         
@@ -3459,7 +3460,11 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
             }
             resultados_lote.append(resultado_completo)
             
-            print(f"📊 Resultado: ✓ {resultado.get('acertos_portugues', 0)}PT/{resultado.get('acertos_matematica', 0)}MT | ✗ {resultado.get('erros_portugues', 0)}PT/{resultado.get('erros_matematica', 0)}MT | Total {resultado['acertos']}/{resultado['total']} ({resultado['percentual']:.1f}%)")
+            # Exibir resultado com anuladas se houver
+            if resultado.get('anuladas', 0) > 0:
+                print(f"📊 Resultado: ✓ {resultado.get('acertos_portugues', 0)}PT/{resultado.get('acertos_matematica', 0)}MT | ✗ {resultado.get('erros_portugues', 0)}PT/{resultado.get('erros_matematica', 0)}MT | ⊘ {resultado['anuladas']} anuladas | Total {resultado['acertos']}/{resultado['total']} ({resultado['percentual']:.1f}%)")
+            else:
+                print(f"📊 Resultado: ✓ {resultado.get('acertos_portugues', 0)}PT/{resultado.get('acertos_matematica', 0)}MT | ✗ {resultado.get('erros_portugues', 0)}PT/{resultado.get('erros_matematica', 0)}MT | Total {resultado['acertos']}/{resultado['total']} ({resultado['percentual']:.1f}%)")
             
             # Delay de 10 segundos após processar cada cartão
             if i < len(arquivos_alunos):
@@ -3523,10 +3528,13 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
         if resultados_validos:
             acertos = [r["acertos"] for r in resultados_validos]
             percentuais = [r["percentual"] for r in resultados_validos]
+            anuladas_total = sum([r.get("anuladas", 0) for r in resultados_validos])
             
             print(f"\n=== ESTATÍSTICAS ===")
             print(f"Média de acertos: {sum(acertos)/len(acertos):.1f}/52 questões")
             print(f"Média percentual: {sum(percentuais)/len(percentuais):.1f}%")
+            if anuladas_total > 0:
+                print(f"⊘ Total de questões anuladas no lote: {anuladas_total}")
     
     # ===========================================
     # ENVIAR PARA GOOGLE SHEETS (OPCIONAL)
@@ -3772,7 +3780,11 @@ def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False, num
             }
             resultados_lote.append(resultado_completo)
             
-            print(f"📊 Resultado: ✓ {resultado.get('acertos_portugues', 0)}PT/{resultado.get('acertos_matematica', 0)}MT | ✗ {resultado.get('erros_portugues', 0)}PT/{resultado.get('erros_matematica', 0)}MT | Total {resultado['acertos']}/{resultado['total']} ({resultado['percentual']:.1f}%)")
+            # Exibir resultado com anuladas se houver
+            if resultado.get('anuladas', 0) > 0:
+                print(f"📊 Resultado: ✓ {resultado.get('acertos_portugues', 0)}PT/{resultado.get('acertos_matematica', 0)}MT | ✗ {resultado.get('erros_portugues', 0)}PT/{resultado.get('erros_matematica', 0)}MT | ⊘ {resultado['anuladas']} anuladas | Total {resultado['acertos']}/{resultado['total']} ({resultado['percentual']:.1f}%)")
+            else:
+                print(f"📊 Resultado: ✓ {resultado.get('acertos_portugues', 0)}PT/{resultado.get('acertos_matematica', 0)}MT | ✗ {resultado.get('erros_portugues', 0)}PT/{resultado.get('erros_matematica', 0)}MT | Total {resultado['acertos']}/{resultado['total']} ({resultado['percentual']:.1f}%)")
             alunos_processados += 1
             
             # Delay de 12 segundos após processar cada cartão
@@ -3810,6 +3822,7 @@ def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False, num
         # Calcular estatísticas
         acertos_totais = [r["resultado"]["acertos"] for r in resultados_lote if "Erro" not in r["dados"]]
         percentuais = [r["resultado"]["percentual"] for r in resultados_lote if "Erro" not in r["dados"]]
+        anuladas_total = sum([r["resultado"].get("anuladas", 0) for r in resultados_lote if "Erro" not in r["dados"]])
         
         if acertos_totais:
             print(f"\n=== ESTATÍSTICAS DE DESEMPENHO ===")
@@ -3817,6 +3830,8 @@ def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False, num
             print(f"Média percentual: {sum(percentuais)/len(percentuais):.1f}%")
             print(f"Melhor resultado: {max(acertos_totais)}/52 ({max(percentuais):.1f}%)")
             print(f"Pior resultado: {min(acertos_totais)}/52 ({min(percentuais):.1f}%)")
+            if anuladas_total > 0:
+                print(f"⊘ Total de questões anuladas no lote: {anuladas_total}")
         
         # Mostrar ranking (ordenado alfabeticamente)
         print(f"\n=== LISTA DE ALUNOS (ORDEM ALFABÉTICA) ===")
@@ -4092,11 +4107,14 @@ def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_ge
         if resultados_validos:
             acertos = [r["acertos"] for r in resultados_validos]
             percentuais = [r["percentual"] for r in resultados_validos]
+            anuladas_total = sum([r.get("anuladas", 0) for r in resultados_validos])
             
             print(f"\n=== ESTATÍSTICAS ===")
             print(f"Alunos processados: {len(resultados_validos)}/{len(arquivos_alunos)}")
             print(f"Média de acertos: {sum(acertos)/len(acertos):.1f}/52 questões")
             print(f"Média percentual: {sum(percentuais)/len(percentuais):.1f}%")
+            if anuladas_total > 0:
+                print(f"⊘ Total de questões anuladas no lote: {anuladas_total}")
     
     # ===========================================
     # NÃO ENVIAR PARA GOOGLE SHEETS (PROBLEMA DE COTA)
@@ -4411,11 +4429,14 @@ def processar_pasta_gabaritos_com_sheets(
         if resultados_validos:
             acertos = [r["acertos"] for r in resultados_validos]
             percentuais = [r["percentual"] for r in resultados_validos]
+            anuladas_total = sum([r.get("anuladas", 0) for r in resultados_validos])
             
             print(f"\n=== ESTATÍSTICAS ===")
             print(f"Alunos processados: {len(resultados_validos)}/{len(arquivos_alunos)}")
             print(f"Média de acertos: {sum(acertos)/len(acertos):.1f}/52 questões")
             print(f"Média percentual: {sum(percentuais)/len(percentuais):.1f}%")
+            if anuladas_total > 0:
+                print(f"⊘ Total de questões anuladas no lote: {anuladas_total}")
     
     # ===========================================
     # RELATÓRIO DO GOOGLE SHEETS
@@ -5259,6 +5280,7 @@ if __name__ == "__main__":
                                                 # FALLBACK: Se Gemini falhar, usar OCR direto
                                                 if not num_questoes_pagina:
                                                     print(f"   ⚠️ Gemini falhou - usando OCR como fallback")
+                                                    print(f"   💡 A pasta de destino será definida pela MAIORIA de ocorrências")
                                                     num_questoes_pagina = detectar_ano_com_ocr_direto(pagina_img, debug=False)
                                                     print(f"   📊 OCR (fallback) detectou: {num_questoes_pagina} questões")
                                                 
@@ -5274,7 +5296,7 @@ if __name__ == "__main__":
                                                         "nascimento": "N/A"
                                                     }
                                                 
-                                                print(f"   🔍 DEBUG - Dados extraídos: Escola={dados_aluno.get('escola')}, Aluno={dados_aluno.get('aluno')}, Turma={dados_aluno.get('turma')}, Nasc={dados_aluno.get('nascimento')}")
+                                                print(f"   🔍 DEBUG - Dados extraídos: Escola={dados_aluno.get('escola')}, Aluno={dados_aluno.get('aluno')}, Turma={dados_aluno.get('turma')}, Nasc={dados_aluno.get('nascimento')}, Questões={num_questoes_pagina}")
                                                 
                                                 # 🆕 SELECIONAR PASTA DE DESTINO BASEADA NO ANO DETECTADO
                                                 if num_questoes_pagina == 44:
@@ -5316,6 +5338,8 @@ if __name__ == "__main__":
                                                 print(f"📚 Turma: {dados_aluno.get('turma', 'N/A')} | Escola: {dados_aluno.get('escola', 'N/A')}")
                                                 print(f"✅ Acertos: {resultado['acertos']}")
                                                 print(f"❌ Erros: {resultado['erros']}")
+                                                if resultado.get('anuladas', 0) > 0:
+                                                    print(f"⊘ Questões anuladas: {resultado['anuladas']}")
                                                 print(f"📊 Percentual: {resultado['percentual']:.1f}%")
                                                 
                                                 # Exibir respostas do aluno
@@ -5347,7 +5371,7 @@ if __name__ == "__main__":
                                         # Limpar imagens temporárias do PDF
                                         
                                         # Se todas as páginas forem do mesmo ano, vai para aquela pasta
-                                        # Se houver mix, vai para pasta do 9° ano (prioridade)
+                                        # Se houver mix, determina pela maioria (número de ocorrências)
                                         if not pastas_detectadas:
                                             pasta_destino_pdf = DRIVER_FOLDER_9ANO  # Padrão
                                             num_questoes_pdf = 52
@@ -5358,10 +5382,18 @@ if __name__ == "__main__":
                                             ano_str = "5° ano" if num_questoes_pdf == 44 else "9° ano"
                                             print(f"\n📁 PDF será movido para: {ano_str} (todas as páginas são do mesmo ano)")
                                         else:
-                                            # Mix de anos - vai para 9° ano
-                                            pasta_destino_pdf = DRIVER_FOLDER_9ANO
-                                            num_questoes_pdf = 52
-                                            print(f"\n📁 PDF será movido para: 9° ano (PDF contém páginas de anos diferentes)")
+                                            # Mix de anos - determina pela MAIORIA (número de ocorrências)
+                                            count_5ano = pastas_detectadas.count(DRIVER_FOLDER_5ANO)
+                                            count_9ano = pastas_detectadas.count(DRIVER_FOLDER_9ANO)
+                                            
+                                            if count_5ano > count_9ano:
+                                                pasta_destino_pdf = DRIVER_FOLDER_5ANO
+                                                num_questoes_pdf = 44
+                                                print(f"\n📁 PDF será movido para: 5° ano ({count_5ano} páginas de 5° ano vs {count_9ano} de 9° ano)")
+                                            else:
+                                                pasta_destino_pdf = DRIVER_FOLDER_9ANO
+                                                num_questoes_pdf = 52
+                                                print(f"\n📁 PDF será movido para: 9° ano ({count_9ano} páginas de 9° ano vs {count_5ano} de 5° ano)")
                                         
                                         # Marcar PDF como processado (ID + NOME + PASTA DESTINO)
                                         nome_sem_ext = os.path.splitext(pdf_info['name'])[0].lower()
@@ -5427,6 +5459,7 @@ if __name__ == "__main__":
                                         # FALLBACK: Se Gemini falhar, usar OCR direto
                                         if not num_questoes_aluno:
                                             print(f"   ⚠️ Gemini falhou - usando OCR como fallback")
+                                            print(f"   💡 A pasta de destino será definida corretamente")
                                             num_questoes_aluno = detectar_ano_com_ocr_direto(aluno_img, debug=False)
                                             print(f"   📊 OCR (fallback) detectou: {num_questoes_aluno} questões")
                                         
@@ -5442,7 +5475,7 @@ if __name__ == "__main__":
                                                 "nascimento": "N/A"
                                             }
                                         
-                                        print(f"   🔍 DEBUG - Dados extraídos: Escola={dados_aluno.get('escola')}, Aluno={dados_aluno.get('aluno')}, Turma={dados_aluno.get('turma')}, Nasc={dados_aluno.get('nascimento')}")
+                                        print(f"   🔍 DEBUG - Dados extraídos: Escola={dados_aluno.get('escola')}, Aluno={dados_aluno.get('aluno')}, Turma={dados_aluno.get('turma')}, Nasc={dados_aluno.get('nascimento')}, Questões={num_questoes_aluno}")
                                         
                                         # 🆕 SELECIONAR PASTA DE DESTINO BASEADA NO ANO DETECTADO
                                         if num_questoes_aluno == 44:
@@ -5470,6 +5503,8 @@ if __name__ == "__main__":
                                         print(f"📚 Turma: {dados_aluno.get('turma', 'N/A')} | Escola: {dados_aluno.get('escola', 'N/A')}")
                                         print(f"✅ Acertos: {resultado['acertos']}")
                                         print(f"❌ Erros: {resultado['erros']}")
+                                        if resultado.get('anuladas', 0) > 0:
+                                            print(f"⊘ Questões anuladas: {resultado['anuladas']}")
                                         print(f"📊 Percentual: {resultado['percentual']:.1f}%")
                                         
                                         # Exibir respostas do aluno

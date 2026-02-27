@@ -32,6 +32,12 @@ pdf2image>=1.16.3          # Conversão PDF → PNG (requer Poppler)
 # PyMuPDF>=1.23.0          # Alternativa (não usado atualmente)
 
 # ────────────────────────────────────────────
+# API REST
+# ────────────────────────────────────────────
+Flask>=3.0.0               # Framework web para API REST
+flask-cors>=4.0.0          # CORS para acesso do frontend
+
+# ────────────────────────────────────────────
 # Utilitários
 # ────────────────────────────────────────────
 python-dotenv>=1.0.0       # Variáveis de ambiente (.env)

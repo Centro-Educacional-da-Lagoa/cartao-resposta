@@ -43,6 +43,8 @@ flask-cors>=4.0.0          # CORS para acesso do frontend
 python-dotenv>=1.0.0       # Variáveis de ambiente (.env)
 requests>=2.31.0           # Requisições HTTP (opcional)
 
+
+
 # ────────────────────────────────────────────
 # NOTAS DE INSTALAÇÃO:
 # ────────────────────────────────────────────

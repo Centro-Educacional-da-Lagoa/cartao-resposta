@@ -8,6 +8,8 @@ from flask_cors import CORS
 import os
 import tempfile
 from datetime import datetime
+from googleapiclient.discovery import build
+from google.oauth2 import service_account
 
 # Importar funções do bot
 from script import (
@@ -19,6 +21,14 @@ CORS(app)  # Permitir acesso do React
 
 GOOGLE_SHEETS_9ANO = os.getenv("GOOGLE_SHEETS_9ANO")
 GOOGLE_SHEETS_5ANO = os.getenv("GOOGLE_SHEETS_5ANO")
+DRIVER_FOLDER_9ANO= os.getenv("DRIVER_FOLDER_9ANO")
+DRIVER_FOLDER_5ANO= os.getenv("DRIVER_FOLDER_5ANO")
+
+def configurar_google_drive():
+
+    SCOPES = ['https://www.googleapis.com/auth/drive']
+    creds = service_account.Credentials.from_service_account_file('credenciais_google.json', scopes=SCOPES)
+    return build('drive', 'v3', credentials=creds)
 
 # ═══════════════════════════════════════════════════════════
 # ENDPOINTS
@@ -229,6 +239,79 @@ def estatisticas_geral():
             }
         })
     except Exception as e:
+        return jsonify({
+            "status": "error",
+            "erro": str(e)
+        }), 500
+
+@app.route('/api/pasta/9ano')
+def pasta_9ano():
+    """Retorna informações sobre a pasta do 9° ano"""
+    try:
+        drive = configurar_google_drive()
+        
+        # Log para debug
+        print(f"Buscando arquivos na pasta: {DRIVER_FOLDER_9ANO}")
+
+        results = drive.files().list(
+            q=f"'{DRIVER_FOLDER_9ANO}' in parents",
+            fields="files(id, name, mimeType, createdTime, size)"
+        ).execute()
+
+        arquivos = results.get('files', [])
+        
+        print(f"Encontrados {len(arquivos)} arquivos")
+
+        return jsonify({
+            "status": "success",
+            "pasta": "9ano",
+            "descricao": "Pasta de dados do 9° ano",
+            "total_registros": len(arquivos),
+            "arquivos": arquivos
+        })
+    except Exception as e:
+        # Log detalhado do erro
+        print(f"ERRO em pasta_9ano: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        return jsonify({
+            "status": "error",
+            "erro": str(e)
+        }), 500
+
+
+@app.route('/api/pasta/5ano')
+def pasta_5ano():
+    """Retorna informações sobre a pasta do 5° ano"""
+    try:
+        drive = configurar_google_drive()
+        
+        # Log para debug
+        print(f"Buscando arquivos na pasta: {DRIVER_FOLDER_5ANO}")
+
+        results = drive.files().list(
+            q=f"'{DRIVER_FOLDER_5ANO}' in parents",
+            fields="files(id, name, mimeType, createdTime, size)"
+        ).execute()
+
+        arquivos = results.get('files', [])
+        
+        print(f"Encontrados {len(arquivos)} arquivos")
+
+        return jsonify({
+            "status": "success",
+            "pasta": "5ano",
+            "descricao": "Pasta de dados do 5° ano",
+            "total_registros": len(arquivos),
+            "arquivos": arquivos
+        })
+    except Exception as e:
+        # Log detalhado do erro
+        print(f"ERRO em pasta_5ano: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
         return jsonify({
             "status": "error",
             "erro": str(e)

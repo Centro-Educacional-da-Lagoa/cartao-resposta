@@ -2358,7 +2358,8 @@ def processar_cartoes_automatizado(
 
 def carregar_credenciais(scopes: List[str]) -> Optional[Credentials]:
     """
-    Carrega credenciais do Google Service Account do arquivo JSON.
+    Carrega credenciais do Google Service Account das variáveis de ambiente.
+    Fallback para arquivo JSON em desenvolvimento local.
     
     Args:
         scopes: Lista de escopos de permissão do Google API
@@ -2367,11 +2368,30 @@ def carregar_credenciais(scopes: List[str]) -> Optional[Credentials]:
         Objeto Credentials ou None se houver erro
     """
     try:
-        credentials = Credentials.from_service_account_file('credenciais_google.json', scopes=scopes)
-        return credentials
-    except FileNotFoundError:
-        print("❌ Arquivo 'credenciais_google.json' não encontrado!")
-        print("📝 Certifique-se de que o arquivo está no diretório atual")
+        # Tentar carregar das variáveis de ambiente primeiro
+        credentials_json = os.getenv('GOOGLE_CREDENTIALS_JSON')
+        
+        if credentials_json:
+            print("🔑 Carregando credenciais das variáveis de ambiente...")
+            import json
+            credentials_dict = json.loads(credentials_json)
+            credentials = Credentials.from_service_account_info(credentials_dict, scopes=scopes)
+            print("✅ Credenciais carregadas com sucesso!")
+            return credentials
+        
+        # Fallback: tentar carregar do arquivo (desenvolvimento local)
+        credentials_file = 'credenciais_google.json'
+        if os.path.exists(credentials_file):
+            print(f"🔑 Carregando credenciais do arquivo {credentials_file}...")
+            credentials = Credentials.from_service_account_file(credentials_file, scopes=scopes)
+            print("✅ Credenciais carregadas com sucesso!")
+            return credentials
+        
+        print("❌ Erro: Nenhuma credencial encontrada (variável de ambiente ou arquivo)")
+        return None
+        
+    except json.JSONDecodeError as e:
+        print(f"❌ Erro ao decodificar JSON das credenciais: {e}")
         return None
     except Exception as e:
         print(f"❌ Erro ao carregar credenciais: {e}")

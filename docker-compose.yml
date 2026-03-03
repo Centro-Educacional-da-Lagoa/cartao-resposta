@@ -1,12 +1,18 @@
-version: "3.8"
-
 services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+  # Serviço 1: A sua API FastAPI
+  api:
+    build: .
+    command: python -u api_rest.py
     ports:
       - "5000:5000"
-    env_file:
-      - .env
-    command: python api_rest.py
+    volumes:
+      - .:/app
+
+  # Serviço 2: O seu script de monitoramento
+  monitor:
+    build: .
+    command: python -u script.py --monitor --intervalo 1
+    volumes:
+      - .:/app
+    depends_on:
+      - api

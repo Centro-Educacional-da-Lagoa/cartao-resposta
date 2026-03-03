@@ -25,9 +25,22 @@ DRIVER_FOLDER_9ANO= os.getenv("DRIVER_FOLDER_9ANO")
 DRIVER_FOLDER_5ANO= os.getenv("DRIVER_FOLDER_5ANO")
 
 def configurar_google_drive():
-
+    """Configura Google Drive usando variáveis de ambiente ou arquivo local"""
+    import json
     SCOPES = ['https://www.googleapis.com/auth/drive']
-    creds = service_account.Credentials.from_service_account_file('credenciais_google.json', scopes=SCOPES)
+    
+    # Tentar carregar das variáveis de ambiente primeiro
+    credentials_json = os.getenv('GOOGLE_CREDENTIALS_JSON')
+    
+    if credentials_json:
+        print("🔑 [API] Carregando credenciais das variáveis de ambiente...")
+        credentials_dict = json.loads(credentials_json)
+        creds = service_account.Credentials.from_service_account_info(credentials_dict, scopes=SCOPES)
+    else:
+        # Fallback para arquivo local
+        print("🔑 [API] Carregando credenciais do arquivo local...")
+        creds = service_account.Credentials.from_service_account_file('credenciais_google.json', scopes=SCOPES)
+    
     return build('drive', 'v3', credentials=creds)
 
 # ═══════════════════════════════════════════════════════════

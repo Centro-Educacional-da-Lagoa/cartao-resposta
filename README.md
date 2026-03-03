@@ -64,16 +64,17 @@ pip install -r requirements.txt
 ```
 
 
+
 ## ⚙️ Configuração
 
-### 1: CONFIGURAR GOOGLE CLOUD, API's, CONTA DE SERVIÇO E ARQUIVO.JSON
+### 1: CONFIGURAR GOOGLE CLOUD, API's, CONTA DE SERVIÇO E CREDENCIAIS_GOOGLE.JSON
 - Acesse https://console.cloud.google.com/
 - Criar um novo projeto
 - Ativar API's do Google Sheets, Google Drive e Gemini for Google Cloud API
 - Criar uma credencial de conta de serviços
 - Marca a caixa do email criado e clicar em "Contas de Serviço"
-- Criar uma nova chave de JSON
-- Irá baixar o arquivo.json, renoemar para credenciais_google.json e colocar dentro da pasta raiz
+- Criar uma nova chave JSON
+- Irá baixar o arquivo.json, renoemar para ccredenciais_google.json e colocar dentro da pasta raiz
 
 ### 2. Criar o arquivo .env e configurar com os seguintes nomes:
    GEMINI_API_KEY="Sua_key_aqui"
@@ -82,7 +83,9 @@ pip install -r requirements.txt
    DRIVER_FOLDER_ID="Sua_key_aqui"
    DRIVER_FOLDER_9ANO="Sua_key_aqui"
    DRIVER_FOLDER_5ANO="Sua_key_aqui"
-- A biblioteca do .env será instalada automaticamente após executar o requirements.txt
+   GOOGLE_CREDENTIALS_JSON='{"type":"service_account","project_id":"...","private_key_id":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n","client_email":"...","client_id":"...","auth_uri":"...","token_uri":"...","auth_provider_x509_cert_url":"...","client_x509_cert_url":"...", "universe_domain":"googleapis.com"}'
+
+OBS: A biblioteca do .env será instalada automaticamente após executar o requirements.txt
 
 
 
@@ -246,12 +249,11 @@ PREPROCESSANDO ARQUIVO ALUNO_2: alanteste44_pb.jpeg
 
 ```bash
 
-## 📊 Formato do Google Sheets
+## 📊 Formato do cabeçalho do Google Sheets
 
 
 | Data/Hora  | Escola |  Aluno | Nascimento | Turma | Acertos Língua portuguesa | Acertos Matemática | Erros Lingua portuguesa | Erros Matemática  | Questoes anuladas | Porcentagem |
-|------------|--------|--------|------------|-------|---------------------------|--------------------|-------------------------|-------------------|-------------------|-------------|
-| 25/09/2025 |   Cel  |  Alan  | 41/01/2019 |  501  |             11            |        5           |           11            |        16         |         1         |     37.2%   |
+
 
 ## 🐛 Solução de Problemas
 

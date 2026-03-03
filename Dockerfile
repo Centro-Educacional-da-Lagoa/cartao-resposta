@@ -21,4 +21,5 @@ COPY . .
 
 EXPOSE 5000
 
-CMD ["python", "api_rest.py"]
+# Executa ambos os scripts redirecionando stdout e stderr para o log do container
+CMD ["sh", "-c", "python -u script.py --monitor --intervalo 1 2>&1 & python -u api_rest.py"]

@@ -36,6 +36,7 @@ import tempfile
 import shutil
 import argparse
 from typing import List, Dict, Optional
+from state import update_status, finish_correction, log as log_event
 from sklearn.cluster import KMeans
 
 load_dotenv()
@@ -5153,6 +5154,8 @@ if __name__ == "__main__":
                     
                     if novos_cartoes:
                         print(f"🆕 Encontrados {len(novos_cartoes)} NOVOS cartões!")
+                        log_event(f"🔍 {len(novos_cartoes)} novo(s) cartão(ões) detectado(s)")
+                        update_status("running", progress=5)
                         for arquivo in novos_cartoes:
                             print(f"   -> {arquivo['name']} ")
                         
@@ -5292,6 +5295,12 @@ if __name__ == "__main__":
                                 for pdf_idx, pdf_info in enumerate(pdfs_para_processar, 1):
                                     try:
                                         print(f"\n📄 [{pdf_idx}/{len(pdfs_para_processar)}] {pdf_info['name']}")
+                                        update_status(
+                                            "running",
+                                            file=pdf_info['name'],
+                                            progress=10
+                                        )
+                                        log_event(f"Processando PDF: {pdf_info['name']}")
                                         
                                         # Baixar PDF
                                         request = drive_service.files().get_media(fileId=pdf_info['id'])
@@ -5342,6 +5351,13 @@ if __name__ == "__main__":
                                         for pagina_idx, pagina_img in enumerate(imagens_paginas, 1):
                                             try:
                                                 print(f"\n🔄 Página {pagina_idx}/{len(imagens_paginas)}")
+                                                status_file_pdf = f"{pdf_info['name']} (página {pagina_idx}/{len(imagens_paginas)})"
+                                                progresso_pdf = min(95, 20 + int((pagina_idx / len(imagens_paginas)) * 70))
+                                                update_status(
+                                                    "running",
+                                                    file=status_file_pdf,
+                                                    progress=progresso_pdf
+                                                )
                                                 
                                                 # 🆕 USAR EXTRAÇÃO OTIMIZADA (1 chamada única ao Gemini)
                                                 num_questoes_pagina = None
@@ -5446,6 +5462,9 @@ if __name__ == "__main__":
                                                                 }
                                                                 enviar_para_planilha(client, dados_envio, resultado, PLANILHA_ID, questoes_detectadas=questoes_detectadas)
 
+                                                            finish_correction(f"{pdf_info['name']}_pag{pagina_idx}")
+                                                            log_event(f"Correção concluída: {pdf_info['name']}_pag{pagina_idx}")
+
                                                 if pasta_destino_pagina == DRIVER_FOLDER_ERROR:
                                                     print("   📁 Destino: Pasta de erro")
 
@@ -5454,6 +5473,8 @@ if __name__ == "__main__":
                                                 
                                             except Exception as e:
                                                 print(f"   ❌ Erro na página {pagina_idx}: {e}")
+                                                update_status("error", file=status_file_pdf)
+                                                log_event(f"❌ Erro na página {pagina_idx} de {pdf_info['name']}: {e}")
                                         
                                         # Limpar imagens temporárias do PDF
                                         
@@ -5506,6 +5527,8 @@ if __name__ == "__main__":
                                         
                                     except Exception as e:
                                         print(f"   ❌ Erro ao processar PDF: {e}")
+                                        update_status("error", file=pdf_info['name'])
+                                        log_event(f"❌ Erro ao processar PDF {pdf_info['name']}: {e}")
                                         import traceback
                                         traceback.print_exc()
                             
@@ -5520,6 +5543,8 @@ if __name__ == "__main__":
                                 for img_idx, cartao_info in enumerate(imagens_para_processar, 1):
                                     try:
                                         print(f"\n🔄 [{img_idx}/{len(imagens_para_processar)}] {cartao_info['name']}")
+                                        update_status("running", file=cartao_info['name'], progress=20)
+                                        log_event(f"Processando imagem: {cartao_info['name']}")
                                         
                                         # Baixar imagem
                                         request = drive_service.files().get_media(fileId=cartao_info['id'])
@@ -5553,6 +5578,7 @@ if __name__ == "__main__":
                                                 num_questoes_aluno = dados_completos.get('num_questoes')
                                                 if num_questoes_aluno:
                                                     print(f"   ✅ Gemini detectou com sucesso: {num_questoes_aluno} questões")
+                                                    update_status("running", file=cartao_info['name'], progress=60)
                                         
                                         # FALLBACK: Se Gemini falhar, usar OCR direto
                                         if not num_questoes_aluno:
@@ -5635,6 +5661,8 @@ if __name__ == "__main__":
                                                             "Turma": dados_aluno.get("turma", "N/A")
                                                         }
                                                         enviar_para_planilha(client, dados_envio, resultado, PLANILHA_ID, questoes_detectadas=questoes_detectadas)
+                                                        finish_correction(cartao_info['name'])  # 🆕 Atualiza estado do bot para correção concluída
+                                                        log_event(f"Correção concluída: {cartao_info['name']}")
 
                                         if pasta_destino_atual == DRIVER_FOLDER_ERROR:
                                             print("   📁 Destino: Pasta de erro")
@@ -5651,6 +5679,8 @@ if __name__ == "__main__":
                                         
                                     except Exception as e:
                                         print(f"   ❌ Erro: {e}")
+                                        update_status("error", file=cartao_info['name'])
+                                        log_event(f"❌ Erro em {cartao_info['name']}: {e}")
                             
                             # 3. Mover arquivos processados no Drive para pasta correta (5º, 9º ou erro)
                             if mover_processados and arquivos_processados_agora:
@@ -5725,11 +5755,15 @@ if __name__ == "__main__":
                             shutil.rmtree(pasta_temp, ignore_errors=True)
                             
                             print(f"\n✅ Processamento concluído!")
+                            update_status("idle")
+                            log_event(f"Processamento de {len(arquivos_processados_agora)} arquivo(s) concluído(s)")
                             print(f"📊 Novos processados: {len(arquivos_processados_agora)}")
                             print(f"📝 Total no histórico: {len(historico['ids'])} IDs / {len(historico['nomes'])} Nomes")
                                 
                         except Exception as e:
                             print(f"❌ Erro durante processamento: {e}")
+                            update_status("error")
+                            log_event(f"❌ Erro durante processamento: {e}")
                             import traceback
                             traceback.print_exc()
                             print("🔄 Continuando monitoramento...")

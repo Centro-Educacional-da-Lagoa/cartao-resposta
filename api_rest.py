@@ -3,10 +3,13 @@
 Rode localmente enquanto desenvolve, depois migre para Docker
 """
 
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import os
 import tempfile
+import json
+import time
+from state import get_state_snapshot
 from datetime import datetime
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
@@ -17,7 +20,25 @@ from script import (
 )
 
 app = Flask(__name__)
-CORS(app)  # Permitir acesso do React
+
+CORS_ALLOWED_ORIGINS = [
+    "https://sorbic-hydrophyllaceous-lisandra.ngrok-free.dev",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+extra_origins = os.getenv("CORS_ALLOWED_ORIGINS")
+if extra_origins:
+    CORS_ALLOWED_ORIGINS.extend(
+        [origin.strip() for origin in extra_origins.split(",") if origin.strip()]
+    )
+
+CORS(
+    app,
+    resources={r"/*": {"origins": CORS_ALLOWED_ORIGINS}},
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+)
 
 GOOGLE_SHEETS_9ANO = os.getenv("GOOGLE_SHEETS_9ANO")
 GOOGLE_SHEETS_5ANO = os.getenv("GOOGLE_SHEETS_5ANO")
@@ -62,17 +83,36 @@ def home():
         ]
     })
 
+@app.route('/api/bot/stream')
+def bot_stream():
+    """Stream de eventos do bot em tempo real (SSE)"""
+    def event_stream():
+        while True:
+            estado = get_state_snapshot()
+            yield f"data: {json.dumps(estado, ensure_ascii=False)}\n\n"
+            time.sleep(1)
+    
+    return app.response_class(
+        event_stream(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no'   # essencial para nginx/proxies
+        }
+    )
+
 @app.route('/api/status')
 def status():
     """Status do sistema"""
     try:
+        estado_bot = get_state_snapshot()
         client = configurar_google_sheets()
 
-        sheets_9ano = client.open_by_key(GOOGLE_SHEETS_9ANO)
-        sheets_5ano = client.open_by_key(GOOGLE_SHEETS_5ANO)
+        sheet_9ano = client.open_by_key(GOOGLE_SHEETS_9ANO).sheet1
+        sheet_5ano = client.open_by_key(GOOGLE_SHEETS_5ANO).sheet1
 
-        dados9ano = sheets_9ano.get_all_records()
-        dados5ano = sheets_5ano.get_all_records()
+        dados9ano = sheet_9ano.get_all_records()
+        dados5ano = sheet_5ano.get_all_records()
 
         data_9ano = None
         if dados9ano:
@@ -86,12 +126,18 @@ def status():
         if data_9ano and data_5ano:
             ultima_atualizacao = max(data_9ano, data_5ano)
         elif data_9ano:
-            ultima_atualizacao = data_9ano or data_5ano
+            ultima_atualizacao = data_9ano
+        elif data_5ano:
+            ultima_atualizacao = data_5ano
 
         return jsonify({
-            "status": "Em andamento",
+            "status": estado_bot.get("status", "idle"),
             "timestamp": datetime.now().isoformat(),
-            "bot_ativo": True,
+            "bot_ativo": estado_bot.get("status") == "running",
+            "arquivo_atual": estado_bot.get("current_file"),
+            "progresso": estado_bot.get("progress", 0),
+            "corrigidos_sessao": estado_bot.get("total_corrected", 0),
+            "ultima_correcao_sessao": estado_bot.get("last_correction"),
             "ultima_atualizacao": ultima_atualizacao,
             "total_registros_9ano": len(dados9ano),
             "total_registros_5ano": len(dados5ano),

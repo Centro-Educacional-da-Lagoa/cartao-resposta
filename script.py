@@ -35,11 +35,15 @@ import io
 import tempfile
 import shutil
 import argparse
-from typing import List, Dict, Optional
-from state import update_status, finish_correction, log as log_event
+from typing import List, Dict, Optional, Tuple
 from sklearn.cluster import KMeans
 
 load_dotenv()
+
+try:
+    from backend_sync import create_backend_sync_client_from_env
+except ImportError:
+    create_backend_sync_client_from_env = None
 
 # Importação do processador de PDF
 try:
@@ -57,32 +61,10 @@ except ImportError:
     print("⚠️ Gemini não disponível (google-generativeai não instalado)")
     genai = None
 
-def configurar_tesseract_cmd() -> None:
-    """Configura o executável do Tesseract conforme o sistema operacional."""
-    tesseract_env = os.getenv("TESSERACT_CMD")
-    if tesseract_env:
-        pytesseract.pytesseract.tesseract_cmd = tesseract_env
-        return
-
-    if os.name == 'nt':
-        candidatos_windows = [
-            r'C:\Program Files\Tesseract-OCR\tesseract.exe',
-            r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
-        ]
-        for caminho in candidatos_windows:
-            if os.path.exists(caminho):
-                pytesseract.pytesseract.tesseract_cmd = caminho
-                return
-
-    caminho_tesseract = shutil.which('tesseract')
-    if caminho_tesseract:
-        pytesseract.pytesseract.tesseract_cmd = caminho_tesseract
-        return
-
-    print("⚠️ Tesseract não encontrado no PATH. Defina TESSERACT_CMD no .env se necessário.")
-
-
-configurar_tesseract_cmd()
+if os.name == "nt":
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+else:
+    pytesseract.pytesseract.tesseract_cmd = os.getenv("TESSERACT_CMD", "tesseract")
 
 EXTENSOES_SUPORTADAS = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf', '.webp')
 DRIVE_MIME_TO_EXT = {
@@ -94,6 +76,117 @@ DRIVE_MIME_TO_EXT = {
     'image/tiff': '.tiff',
     'image/webp': '.webp'
 }
+
+# Kill switch global para retificação de perspectiva (padrão: ativo)
+PERSPECTIVA_HABILITADA = True
+
+def normalizar_respostas_backend(respostas: List[str]) -> List[str]:
+    normalizadas = []
+    for resposta in respostas:
+        if not isinstance(resposta, str):
+            normalizadas.append("-")
+            continue
+        valor = resposta.strip().upper()
+        if valor in {"A", "B", "C", "D", "E", "-"}:
+            normalizadas.append(valor)
+        elif valor == "?":
+            normalizadas.append("-")
+        else:
+            normalizadas.append("-")
+    return normalizadas
+
+def _resolver_ids_ou_nomes(dados_aluno: Dict[str, str]) -> Dict[str, str]:
+    turma_id = dados_aluno.get("turma_id") or dados_aluno.get("turmaId")
+    aluno_id = dados_aluno.get("aluno_id") or dados_aluno.get("alunoId")
+
+    if turma_id and aluno_id:
+        return {
+            "turmaId": str(turma_id).strip(),
+            "alunoId": str(aluno_id).strip(),
+        }
+
+    turma_nome = str(dados_aluno.get("turma", "")).strip()
+    aluno_nome = str(dados_aluno.get("aluno", "")).strip()
+
+    if turma_nome and turma_nome.upper() != "N/A" and aluno_nome and aluno_nome.upper() != "N/A":
+        return {
+            "turmaNome": turma_nome,
+            "alunoNome": aluno_nome,
+        }
+
+    return {}
+
+def _resolver_nomes_fallback(dados_aluno: Dict[str, str], file_name: str) -> Dict[str, str]:
+    turma_nome = str(dados_aluno.get("turma", "")).strip()
+    aluno_nome = str(dados_aluno.get("aluno", "")).strip()
+
+    turma_fallback = turma_nome if turma_nome and turma_nome.upper() != "N/A" else "TURMA_NAO_IDENTIFICADA"
+
+    if aluno_nome and aluno_nome.upper() != "N/A":
+        aluno_fallback = aluno_nome
+    else:
+        nome_arquivo = os.path.splitext(file_name)[0].strip()
+        aluno_fallback = nome_arquivo if nome_arquivo else "ALUNO_NAO_IDENTIFICADO"
+
+    return {
+        "turmaNome": turma_fallback,
+        "alunoNome": aluno_fallback,
+    }
+
+def enviar_resultado_para_backend(
+    backend_client,
+    drive_file_id: str,
+    file_name: str,
+    dados_aluno: Dict[str, str],
+    respostas_aluno: List[str],
+    respostas_gabarito: List[str],
+    resultado: Dict,
+    questoes_detectadas: int,
+    origem: str,
+) -> bool:
+    if not backend_client:
+        return False
+
+    identificacao = _resolver_ids_ou_nomes(dados_aluno)
+    if not identificacao:
+        identificacao = _resolver_nomes_fallback(dados_aluno, file_name)
+        print(
+            "   ⚠️ Sync backend sem vínculo completo: enviando com turma/aluno fallback "
+            "para garantir registro no painel"
+        )
+
+    payload = {
+        "driveFileId": drive_file_id,
+        "fileName": file_name,
+        "origem": origem,
+        "avaliacaoRef": f"{len(respostas_aluno)}_questoes",
+        "respostasMarcadas": normalizar_respostas_backend(respostas_aluno),
+        "gabarito": normalizar_respostas_backend(respostas_gabarito),
+        "metadata": {
+            "escola": dados_aluno.get("escola", "N/A"),
+            "aluno": dados_aluno.get("aluno", "N/A"),
+            "turma": dados_aluno.get("turma", "N/A"),
+            "nascimento": dados_aluno.get("nascimento", "N/A"),
+            "questoesDetectadas": questoes_detectadas,
+            "acertos": resultado.get("acertos"),
+            "erros": resultado.get("erros"),
+            "acertos_portugues": resultado.get("acertos_portugues"),
+            "acertos_matematica": resultado.get("acertos_matematica"),
+            "erros_portugues": resultado.get("erros_portugues"),
+            "erros_matematica": resultado.get("erros_matematica"),
+            "anuladas": resultado.get("anuladas"),
+            "percentual": resultado.get("percentual"),
+        },
+    }
+    payload.update(identificacao)
+
+    try:
+        backend_client.send_leitura(payload)
+        print("   ✅ Enviado para backend (banco)")
+        return True
+    except Exception as e:
+        print(f"   ⚠️ Erro ao enviar para backend: {e}")
+        return False
 
 # ===========================================
 # SEÇÃO 0: PREPROCESSAMENTO DE ARQUIVOS (PDF/IMAGEM)
@@ -132,111 +225,386 @@ def converter_para_preto_e_branco(image_path: str, threshold: int = 180, salvar:
         print(f"   ❌ Erro: {e}")
         return image_path
 
+def _ordenar_pontos_documento(pontos: np.ndarray) -> np.ndarray:
+    """
+    Ordena 4 pontos para o formato:
+    [top-left, top-right, bottom-right, bottom-left]
+    """
+    pontos = np.asarray(pontos, dtype=np.float32).reshape(4, 2)
+    soma = pontos.sum(axis=1)
+    diferenca = np.diff(pontos, axis=1).reshape(-1)
+
+    ordenados = np.zeros((4, 2), dtype=np.float32)
+    ordenados[0] = pontos[np.argmin(soma)]      # top-left
+    ordenados[2] = pontos[np.argmax(soma)]      # bottom-right
+    ordenados[1] = pontos[np.argmin(diferenca)] # top-right
+    ordenados[3] = pontos[np.argmax(diferenca)] # bottom-left
+    return ordenados
+
+
+def _calcular_angulo_em_graus(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+    """
+    Calcula o ângulo ABC em graus.
+    """
+    ba = a - b
+    bc = c - b
+    denominador = np.linalg.norm(ba) * np.linalg.norm(bc)
+    if denominador <= 1e-6:
+        return 0.0
+    cos_theta = float(np.dot(ba, bc) / denominador)
+    cos_theta = max(-1.0, min(1.0, cos_theta))
+    return float(np.degrees(np.arccos(cos_theta)))
+
+
+def _avaliar_quadrilatero_documento(
+    quadrilatero: np.ndarray,
+    image_shape: Tuple[int, int, int]
+) -> Tuple[bool, str, Dict[str, float]]:
+    """
+    Valida confiança geométrica do documento detectado.
+    """
+    height, width = image_shape[:2]
+    area_imagem = float(height * width)
+    contorno = quadrilatero.astype(np.float32).reshape(-1, 1, 2)
+    area_doc = float(cv2.contourArea(contorno))
+    area_ratio = area_doc / area_imagem if area_imagem > 0 else 0.0
+
+    if area_ratio < 0.20:
+        return False, f"Área baixa ({area_ratio:.2%})", {"area_ratio": area_ratio}
+
+    if not cv2.isContourConvex(contorno.astype(np.int32)):
+        return False, "Contorno não convexo", {"area_ratio": area_ratio}
+
+    ordenados = _ordenar_pontos_documento(quadrilatero)
+    (tl, tr, br, bl) = ordenados
+
+    largura_topo = np.linalg.norm(tr - tl)
+    largura_base = np.linalg.norm(br - bl)
+    altura_dir = np.linalg.norm(tr - br)
+    altura_esq = np.linalg.norm(tl - bl)
+
+    max_largura = max(largura_topo, largura_base)
+    max_altura = max(altura_dir, altura_esq)
+    if max_largura < 50 or max_altura < 50:
+        return False, "Documento muito pequeno", {"area_ratio": area_ratio}
+
+    proporcao = max_largura / max_altura if max_altura > 0 else 0.0
+    proporcao_normalizada = proporcao if proporcao >= 1 else (1 / proporcao if proporcao > 0 else 999)
+    if proporcao_normalizada > 2.20:
+        return False, f"Proporção inválida ({proporcao:.2f})", {"area_ratio": area_ratio, "proporcao": proporcao}
+
+    angulos = [
+        _calcular_angulo_em_graus(bl, tl, tr),
+        _calcular_angulo_em_graus(tl, tr, br),
+        _calcular_angulo_em_graus(tr, br, bl),
+        _calcular_angulo_em_graus(br, bl, tl),
+    ]
+    if any(a < 55 or a > 125 for a in angulos):
+        return False, f"Ângulos inválidos ({', '.join(f'{a:.1f}' for a in angulos)})", {
+            "area_ratio": area_ratio,
+            "proporcao": proporcao,
+        }
+
+    return True, "OK", {
+        "area_ratio": area_ratio,
+        "proporcao": proporcao,
+        "largura": float(max_largura),
+        "altura": float(max_altura),
+        "angulo_min": float(min(angulos)),
+        "angulo_max": float(max(angulos)),
+    }
+
+
+def _montar_comparativo_lado_a_lado(img_esq: np.ndarray, img_dir: np.ndarray) -> np.ndarray:
+    """
+    Gera comparativo horizontal redimensionando ambas para a mesma altura.
+    """
+    h_esq, w_esq = img_esq.shape[:2]
+    h_dir, w_dir = img_dir.shape[:2]
+    if h_esq <= 0 or h_dir <= 0:
+        return img_esq
+
+    altura_alvo = max(h_esq, h_dir)
+    nova_largura_esq = max(1, int(w_esq * (altura_alvo / h_esq)))
+    nova_largura_dir = max(1, int(w_dir * (altura_alvo / h_dir)))
+    img_esq_r = cv2.resize(img_esq, (nova_largura_esq, altura_alvo), interpolation=cv2.INTER_AREA)
+    img_dir_r = cv2.resize(img_dir, (nova_largura_dir, altura_alvo), interpolation=cv2.INTER_AREA)
+    return np.hstack([img_esq_r, img_dir_r])
+
+
+def _salvar_artefatos_perspectiva(
+    image_path: str,
+    original: np.ndarray,
+    imagem_cantos: np.ndarray,
+    retificada: np.ndarray,
+    debug_dir: Optional[str] = None
+) -> Dict[str, str]:
+    """
+    Salva artefatos visuais da etapa de perspectiva.
+    """
+    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    output_dir = debug_dir or os.path.dirname(image_path) or "."
+    os.makedirs(output_dir, exist_ok=True)
+
+    path_original = os.path.join(output_dir, f"{base_name}_01_original.png")
+    path_cantos = os.path.join(output_dir, f"{base_name}_02_cantos_detectados.png")
+    path_retificada = os.path.join(output_dir, f"{base_name}_03_retificada.png")
+    path_comparativo = os.path.join(output_dir, f"{base_name}_04_comparativo.png")
+
+    comparativo = _montar_comparativo_lado_a_lado(original, retificada)
+
+    cv2.imwrite(path_original, original)
+    cv2.imwrite(path_cantos, imagem_cantos)
+    cv2.imwrite(path_retificada, retificada)
+    cv2.imwrite(path_comparativo, comparativo)
+
+    return {
+        "01_original": path_original,
+        "02_cantos_detectados": path_cantos,
+        "03_retificada": path_retificada,
+        "04_comparativo": path_comparativo,
+    }
+
+
+def corrigir_perspectiva_documento(
+    image_path: str,
+    debug: bool = False,
+    debug_dir: Optional[str] = None
+) -> Dict[str, object]:
+    """
+    Corrige perspectiva do documento de forma condicional (estilo scanner).
+    """
+    resultado: Dict[str, object] = {
+        "input_path": image_path,
+        "output_path": image_path,
+        "aplicada": False,
+        "status": "ignored",
+        "motivo": "Não avaliado",
+        "metricas": {},
+        "debug_paths": {},
+    }
+
+    try:
+        img = cv2.imread(image_path)
+        if img is None:
+            resultado["status"] = "fallback"
+            resultado["motivo"] = "Não foi possível carregar imagem"
+            return resultado
+
+        original = img.copy()
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(blur)
+
+        edges = cv2.Canny(clahe, 50, 150)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+        closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+        melhor_quad = None
+        melhor_motivo = "Nenhum quadrilátero válido encontrado"
+        metricas_quad: Dict[str, float] = {}
+
+        for contour in contours[:20]:
+            perimetro = cv2.arcLength(contour, True)
+            if perimetro < 10:
+                continue
+            approx = cv2.approxPolyDP(contour, 0.02 * perimetro, True)
+            if len(approx) != 4:
+                continue
+
+            quadrilatero = approx.reshape(4, 2).astype(np.float32)
+            valido, motivo, metricas = _avaliar_quadrilatero_documento(quadrilatero, img.shape)
+            if valido:
+                melhor_quad = quadrilatero
+                metricas_quad = metricas
+                melhor_motivo = "Confiança geométrica aprovada"
+                break
+
+            if melhor_motivo == "Nenhum quadrilátero válido encontrado":
+                melhor_motivo = motivo
+                metricas_quad = metricas
+
+        imagem_cantos = original.copy()
+        retificada = original.copy()
+
+        if melhor_quad is None:
+            resultado["status"] = "ignored"
+            resultado["motivo"] = melhor_motivo
+            resultado["metricas"] = metricas_quad
+
+            if debug:
+                cv2.putText(
+                    imagem_cantos,
+                    f"Sem perspectiva: {melhor_motivo}",
+                    (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 0, 255),
+                    2,
+                    cv2.LINE_AA
+                )
+                resultado["debug_paths"] = _salvar_artefatos_perspectiva(
+                    image_path=image_path,
+                    original=original,
+                    imagem_cantos=imagem_cantos,
+                    retificada=retificada,
+                    debug_dir=debug_dir,
+                )
+            return resultado
+
+        pontos_ordenados = _ordenar_pontos_documento(melhor_quad)
+        (tl, tr, br, bl) = pontos_ordenados
+
+        largura_a = np.linalg.norm(br - bl)
+        largura_b = np.linalg.norm(tr - tl)
+        altura_a = np.linalg.norm(tr - br)
+        altura_b = np.linalg.norm(tl - bl)
+        max_width = max(1, int(max(largura_a, largura_b)))
+        max_height = max(1, int(max(altura_a, altura_b)))
+
+        destino = np.array(
+            [
+                [0, 0],
+                [max_width - 1, 0],
+                [max_width - 1, max_height - 1],
+                [0, max_height - 1],
+            ],
+            dtype=np.float32
+        )
+
+        matriz = cv2.getPerspectiveTransform(pontos_ordenados, destino)
+        retificada = cv2.warpPerspective(
+            original,
+            matriz,
+            (max_width, max_height),
+            flags=cv2.INTER_CUBIC,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(255, 255, 255),
+        )
+
+        pts_int = pontos_ordenados.astype(np.int32)
+        cv2.polylines(imagem_cantos, [pts_int], True, (0, 255, 0), 3)
+        for idx, (px, py) in enumerate(pts_int):
+            cv2.circle(imagem_cantos, (int(px), int(py)), 6, (255, 0, 0), -1)
+            cv2.putText(
+                imagem_cantos,
+                str(idx + 1),
+                (int(px) + 8, int(py) - 8),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 0, 0),
+                2,
+                cv2.LINE_AA
+            )
+
+        nome_base = os.path.splitext(image_path)[0]
+        extensao = os.path.splitext(image_path)[1]
+        output_path = f"{nome_base}_perspectiva{extensao}"
+        cv2.imwrite(output_path, retificada)
+
+        resultado["output_path"] = output_path
+        resultado["aplicada"] = True
+        resultado["status"] = "applied"
+        resultado["motivo"] = melhor_motivo
+        resultado["metricas"] = metricas_quad
+
+        if debug:
+            resultado["debug_paths"] = _salvar_artefatos_perspectiva(
+                image_path=image_path,
+                original=original,
+                imagem_cantos=imagem_cantos,
+                retificada=retificada,
+                debug_dir=debug_dir,
+            )
+
+        return resultado
+
+    except Exception as e:
+        resultado["status"] = "fallback"
+        resultado["motivo"] = f"Erro na perspectiva: {e}"
+        resultado["output_path"] = image_path
+        return resultado
+
+
 def corrigir_rotacao_documento(image_path: str, debug: bool = False) -> str:
     """
     🔧 CORREÇÃO DE ROTAÇÃO - VERSÃO MELHORADA
-    
-    Detecta e corrige inclinação de documentos com precisão.
-    
-    Args:
-        image_path: Caminho da imagem
-        debug: Se deve salvar imagens intermediárias
-        
-    Returns:
-        Caminho da imagem corrigida
     """
     try:
         img = cv2.imread(image_path)
         if img is None:
             return image_path
-        
+
         height, width = img.shape[:2]
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # ═══════════════════════════════════════════════════
-        # MÉTODO 1: Detectar contorno do documento
-        # ═══════════════════════════════════════════════════
-        
-        # Binarização adaptativa (melhor para iluminação irregular)
+
         binary = cv2.adaptiveThreshold(
-            gray, 255, 
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-            cv2.THRESH_BINARY, 
-            11, 2
+            gray,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            11,
+            2
         )
-        
-        # Encontrar contornos
+
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
         angle_correcao = None
-        
+        maior_contorno = None
+
         if contours:
-            # Pegar o maior contorno (documento)
             maior_contorno = max(contours, key=cv2.contourArea)
-            
-            # MinAreaRect retorna: ((center_x, center_y), (width, height), angle)
             rect = cv2.minAreaRect(maior_contorno)
             angle_raw = rect[2]
-            
-            # 🔧 CORREÇÃO DE ÂNGULO - OpenCV usa -90 a 0
-            # Se width > height, o ângulo está na orientação errada
             box_width, box_height = rect[1]
-            
+
             if box_width < box_height:
                 angle_correcao = angle_raw
             else:
                 angle_correcao = angle_raw + 90
-            
-            # Normalizar para -45° a 45°
+
             if angle_correcao > 45:
                 angle_correcao = angle_correcao - 90
             elif angle_correcao < -45:
                 angle_correcao = angle_correcao + 90
-            
+
             if debug:
                 print(f"   📐 Método 1 (Contorno): {angle_correcao:.3f}°")
-        
-        # ═══════════════════════════════════════════════════
-        # MÉTODO 2: Hough Lines (Fallback)
-        # ═══════════════════════════════════════════════════
-        
+
         if angle_correcao is None or abs(angle_correcao) < 0.05:
             edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-            lines = cv2.HoughLines(edges, 1, np.pi/180, 200)
-            
+            lines = cv2.HoughLines(edges, 1, np.pi / 180, 200)
+
             if lines is not None and len(lines) > 5:
                 angles = []
                 for line in lines[:20]:
                     rho, theta = line[0]
                     angle_deg = np.degrees(theta) - 90
-                    
                     if -45 <= angle_deg <= 45:
                         angles.append(angle_deg)
-                
+
                 if angles:
                     angle_correcao = np.median(angles)
-                    
                     if debug:
                         print(f"   📐 Método 2 (Hough): {angle_correcao:.3f}°")
-        
-        # ═══════════════════════════════════════════════════
-        # Aplicar Rotação
-        # ═══════════════════════════════════════════════════
-        
+
         if angle_correcao is None:
-            print("   ⚠️ Não foi possível detectar ângulo")
+            if debug:
+                print("   ⚠️ Não foi possível detectar ângulo")
             return image_path
-        
+
         if abs(angle_correcao) < 0.05:
             if debug:
                 print(f"   ✅ Rotação insignificante ({angle_correcao:.3f}°)")
             return image_path
-        
-        print(f"   🔄 Corrigindo rotação: {angle_correcao:.3f}°")
-        
+
+        if debug:
+            print(f"   🔄 Corrigindo rotação: {angle_correcao:.3f}°")
+
         center = (width // 2, height // 2)
         rotation_matrix = cv2.getRotationMatrix2D(center, angle_correcao, 1.0)
-        
         img_rotated = cv2.warpAffine(
             img,
             rotation_matrix,
@@ -245,79 +613,137 @@ def corrigir_rotacao_documento(image_path: str, debug: bool = False) -> str:
             borderValue=(255, 255, 255),
             flags=cv2.INTER_CUBIC
         )
-        
+
         nome_base = os.path.splitext(image_path)[0]
         extensao = os.path.splitext(image_path)[1]
         output_path = f"{nome_base}_deskewed{extensao}"
-        
-        cv2.imwrite(output_path, img_rotated, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        
-        if debug:
-            # Salvar imagem de debug com linhas detectadas
+        cv2.imwrite(output_path, img_rotated)
+
+        if debug and maior_contorno is not None:
             debug_img = img.copy()
             cv2.drawContours(debug_img, [maior_contorno], -1, (0, 255, 0), 3)
             cv2.imwrite(f"{nome_base}_debug_contorno.png", debug_img)
-        
+
         return output_path
-        
+
     except Exception as e:
         print(f"   ❌ Erro na correção: {e}")
         return image_path
 
-def preprocessar_arquivo(file_path: str, tipo: str = "aluno") -> str:
+
+def normalizar_documento_para_omr(
+    image_path: str,
+    aplicar_perspectiva: bool = True,
+    debug: bool = False,
+    debug_dir: Optional[str] = None
+) -> Dict[str, object]:
     """
-    Preprocessa arquivo (PDF ou imagem) para garantir que temos uma imagem processável
-    
-    Args:
-        file_path: Caminho para o arquivo (PDF ou imagem)
-        tipo: Tipo do arquivo ("aluno", "gabarito") para logs
-        
-    Returns:
-        Caminho para a imagem processável
+    Fluxo oficial de normalização:
+    1) Perspectiva condicional (se habilitada)
+    2) Deskew sempre (fallback fechado)
+    """
+    perspectiva_result: Dict[str, object]
+    caminho_base = image_path
+
+    if aplicar_perspectiva:
+        perspectiva_result = corrigir_perspectiva_documento(
+            image_path=image_path,
+            debug=debug,
+            debug_dir=debug_dir,
+        )
+        caminho_base = str(perspectiva_result.get("output_path", image_path))
+    else:
+        perspectiva_result = {
+            "input_path": image_path,
+            "output_path": image_path,
+            "aplicada": False,
+            "status": "ignored",
+            "motivo": "Perspectiva desativada por configuração",
+            "metricas": {},
+            "debug_paths": {},
+        }
+
+    caminho_final = corrigir_rotacao_documento(caminho_base, debug=False)
+    deskew_aplicado = caminho_final != caminho_base
+
+    status_visual = str(perspectiva_result.get("status", "ignored"))
+    if status_visual not in {"applied", "ignored", "fallback"}:
+        status_visual = "ignored"
+
+    return {
+        "input_path": image_path,
+        "output_path": caminho_final,
+        "status_visual": status_visual,
+        "motivo": perspectiva_result.get("motivo", ""),
+        "perspectiva_aplicada": bool(perspectiva_result.get("aplicada", False)),
+        "deskew_aplicado": deskew_aplicado,
+        "perspectiva": perspectiva_result,
+    }
+
+
+def preprocessar_arquivo(
+    file_path: str,
+    tipo: str = "aluno",
+    debug: bool = False,
+    aplicar_perspectiva: Optional[bool] = None,
+) -> str:
+    """
+    Preprocessa arquivo (PDF ou imagem) e aplica normalização de documento.
     """
     print(f"\n🔄 PREPROCESSANDO ARQUIVO {tipo.upper()}: {os.path.basename(file_path)}")
-    
-    # Verificar se arquivo existe
+
+    if aplicar_perspectiva is None:
+        aplicar_perspectiva = PERSPECTIVA_HABILITADA
+
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Arquivo não encontrado: {file_path}")
-    
-    # Se for PDF, converter para imagem
+
+    imagem_base = file_path
+
     if is_pdf_file(file_path) and PDF_PROCESSOR_AVAILABLE:
-        print(f"Arquivo PDF detectado - convertendo para imagem...")
+        print("Arquivo PDF detectado - convertendo para imagem...")
         try:
-            best_image, temp_files = process_pdf_file(file_path, keep_temp_files=False)
-            print(f" Imagem gerada: {os.path.basename(best_image)}")
-            
-            # Retornar imagem sem correção
-            best_image_corrigido = corrigir_rotacao_documento(best_image, debug=True)
-            return best_image_corrigido
+            best_image, _ = process_pdf_file(file_path, keep_temp_files=False)
+            print(f"   ✅ Imagem gerada: {os.path.basename(best_image)}")
+            imagem_base = best_image
         except Exception as e:
             print(f"❌ Erro ao converter PDF: {e}")
             raise e
-    
-    # Se for imagem, verificar se é válida
-    elif file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff')):
+
+    elif file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp')):
         try:
-            # Tentar carregar a imagem para validar
             img = Image.open(file_path)
-            img.verify()  # Verificar se a imagem é válida
-            
-            return file_path
+            img.verify()
         except Exception as e:
             raise Exception(f"Arquivo de imagem inválido: {e}")
-    
-    # Tipo de arquivo não suportado
     else:
         if is_pdf_file(file_path) and not PDF_PROCESSOR_AVAILABLE:
             raise Exception(
                 "Arquivo PDF detectado, mas processador de PDF não está disponível.\n"
                 "Instale com: pip install pdf2image"
             )
-        else:
-            raise Exception(
-                f"Tipo de arquivo não suportado: {file_path}\n"
-                "Formatos suportados: PDF, PNG, JPG, JPEG, BMP, TIFF"
-            )
+        raise Exception(
+            f"Tipo de arquivo não suportado: {file_path}\n"
+            "Formatos suportados: PDF, PNG, JPG, JPEG, BMP, TIFF, WEBP"
+        )
+
+    normalizacao = normalizar_documento_para_omr(
+        image_path=imagem_base,
+        aplicar_perspectiva=aplicar_perspectiva,
+        debug=debug,
+    )
+
+    if debug:
+        print(
+            "   🧭 Normalização:",
+            f"perspectiva={normalizacao.get('status_visual')}",
+            f"| deskew={'sim' if normalizacao.get('deskew_aplicado') else 'não'}",
+        )
+        motivo = str(normalizacao.get("motivo", "")).strip()
+        if motivo:
+            print(f"   ℹ️ Motivo perspectiva: {motivo}")
+
+    return str(normalizacao["output_path"])
 
 def listar_arquivos_suportados(diretorio: str = ".") -> dict:
     """
@@ -416,6 +842,10 @@ def analisar_qualidade_marcacao(gray, contorno) -> dict:
         'contorno': contorno
     }
 
+MARCACAO_AREA_MIN = 35
+MARCACAO_AREA_MAX = 3500
+
+
 def eh_marcacao_valida(metricas: dict, debug: bool = False) -> tuple: #Nessa área a gente coloca como universal a validação da área, circularidade, aspect raiot, intensidade, preenchimento e uniformidade das bolhas. Caso queira que o bot pegue mais ou menos bolhas, o ajuste tem que ser feito por aqui
     """
     🆕 VALIDAÇÃO RIGOROSA DE MARCAÇÃO
@@ -423,8 +853,8 @@ def eh_marcacao_valida(metricas: dict, debug: bool = False) -> tuple: #Nessa ár
     """
     motivos_rejeicao = []
     
-    # 1️⃣ ÁREA: Entre 80-2000 pixels (mais permissivo para círculos maiores)
-    if not (80 <= metricas['area'] <= 2000):
+    # 1️⃣ ÁREA: faixa ampliada para aceitar marcações pequenas, normais e um pouco maiores
+    if not (MARCACAO_AREA_MIN <= metricas['area'] <= MARCACAO_AREA_MAX):
         motivos_rejeicao.append(f"Área fora do padrão ({metricas['area']:.0f}px)") #Aqui regula o total de pixel junto que o bot vai determinar se é uma marcação ou não
     
     # 2️⃣ CIRCULARIDADE: > 0.12 (mais permissivo para círculos pintados à mão)
@@ -432,7 +862,7 @@ def eh_marcacao_valida(metricas: dict, debug: bool = False) -> tuple: #Nessa ár
         motivos_rejeicao.append(f"Baixa circularidade ({metricas['circularidade']:.2f})") #Circularidade da bolha, quanto mais próximo de 1, mais circular é a bolha.
     
     # 3️⃣ ASPECT RATIO: Entre 0.20-1.6 (aceitar formas levemente alongadas)
-    if not (0.20 <= metricas['aspect_ratio'] <= 1.6):
+    if not (0.18 <= metricas['aspect_ratio'] <= 1.6):
         motivos_rejeicao.append(f"Forma não circular (ratio={metricas['aspect_ratio']:.2f})") #alongamento da bolha, quanto mais próximo de 1, mais circular é a bolha.
     
     # 4️⃣ INTENSIDADE: < 140 (mais permissivo para marcações com caneta)
@@ -517,8 +947,8 @@ def detectar_respostas_pdf(image_path: str, debug: bool = False) -> list:
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
         
         # PARÂMETROS MENOS RIGOROSOS - Alta resolução
-        area_min = 300     # ↓ Reduzido (era 600)
-        area_max = 10000   # ↑ Aumentado (era 6000)
+        area_min = 200     # Aceita marcações menores em PDF de alta resolução
+        area_max = 16000   # Aceita preenchimentos maiores/rabiscados sem cortar a marcação
         circularity_min = 0.06  # ↓ Muito flexível (era 0.12)
         intensity_max = 90      # ↑ Aumentado (era 60)
         
@@ -531,8 +961,8 @@ def detectar_respostas_pdf(image_path: str, debug: bool = False) -> list:
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
         
-        area_min = 80      # ↓ Reduzido (era 100)
-        area_max = 1500    # ↑ Aumentado (era 800)
+        area_min = MARCACAO_AREA_MIN
+        area_max = MARCACAO_AREA_MAX
         circularity_min = 0.10  # ↓ Muito flexível (era 0.25)
         intensity_max = 60      # ↑ Aumentado (era 35)
     
@@ -1369,7 +1799,7 @@ def detectar_respostas_universal(image_path: str, debug: bool = False) -> list:
     num_bolhas = 0
     for cnt in contornos:
         area = cv2.contourArea(cnt)
-        if 50 < area < 1500:
+        if MARCACAO_AREA_MIN < area < MARCACAO_AREA_MAX:
             perimeter = cv2.arcLength(cnt, True)
             if perimeter > 0:
                 circularity = 4 * np.pi * area / (perimeter * perimeter)
@@ -1819,8 +2249,6 @@ def extrair_dados_completos_com_gemini(model, image_path: str, nome_arquivo: str
                 num_questoes = 52
                 print(f"   ✅ Gemini detectou: 9° ano (52 questões)")
             else:
-                num_questoes = None
-
                 # Fallback 1: tentar pelo nome do arquivo
                 if nome_arquivo:
                     nome_lower = nome_arquivo.lower()
@@ -1832,13 +2260,10 @@ def extrair_dados_completos_com_gemini(model, image_path: str, nome_arquivo: str
                         print(f"   ✅ Detectado pelo nome do arquivo: 9° ano (52 questões)")
                     else:
                         # Fallback 2: tentar pela turma
-                        num_questoes = detectar_ano_por_turma(dados.get('turma', ''), usar_padrao=False)
+                        num_questoes = detectar_ano_por_turma(dados.get('turma', ''))
                 else:
                     # Fallback: tentar pela turma
-                    num_questoes = detectar_ano_por_turma(dados.get('turma', ''), usar_padrao=False)
-
-                if num_questoes not in (44, 52):
-                    print("   ⚠️ Gemini: não foi possível identificar o ano com confiança")
+                    num_questoes = detectar_ano_por_turma(dados.get('turma', ''))
             
             # Adicionar número de questões ao resultado
             dados['num_questoes'] = num_questoes
@@ -1892,7 +2317,7 @@ def extrair_cabecalho_com_fallback(model, image_path, numero_aluno=None):
         "nascimento": "N/A"
     }
 
-def detectar_ano_por_turma(turma: str, usar_padrao: bool = True) -> Optional[int]:
+def detectar_ano_por_turma(turma: str) -> int:
     """
     Detecta se o aluno é do 5° ou 9° ano baseado na informação de turma.
     
@@ -1904,16 +2329,12 @@ def detectar_ano_por_turma(turma: str, usar_padrao: bool = True) -> Optional[int
     
     Args:
         turma: String contendo informação da turma (ex: "9A", "5° ano do Ensino Fundamental")
-        usar_padrao: Se True, retorna 52 quando não detectar. Se False, retorna None.
-
+    
     Returns:
-        44 (para 5° ano), 52 (para 9° ano) ou None (quando não identificar e usar_padrao=False)
+        44 (para 5° ano) ou 52 (para 9° ano)
+        Padrão: 52 se não conseguir detectar
     """
     if not turma or turma == "N/A" or str(turma).strip() == "":
-        if not usar_padrao:
-            print("   ⚠️ Turma não detectada (N/A) - ano indefinido")
-            return None
-
         print("   ⚠️ ATENÇÃO: Turma não detectada (N/A) - usando padrão: 52 questões (9° ano)")
         print("   💡 Certifique-se de que o campo 'TURMA' está visível no cartão!")
         return 52
@@ -1952,18 +2373,13 @@ def detectar_ano_por_turma(turma: str, usar_padrao: bool = True) -> Optional[int
         print(f"   ✅ DETECTADO: Palavra 'nono' → 9° ano (52 questões)")
         return 52
     
-    # Se não detectar nada, usar padrão (52) ou retornar indefinido
-    if not usar_padrao:
-        print(f"   ⚠️ NÃO RECONHECIDO: Nenhum indicador de ano encontrado em '{turma}'")
-        print(f"   💡 Turma detectada: '{turma_str}' - Verifique se contém '5' ou '9'")
-        return None
-
+    # Se não detectar nada, usar padrão (52)
     print(f"   ⚠️ NÃO RECONHECIDO: Nenhum indicador de ano encontrado em '{turma}' - usando padrão: 52 questões")
     print(f"   💡 Turma detectada: '{turma_str}' - Verifique se contém '5' ou '9'")
     return 52
 
 
-def detectar_ano_com_ocr_direto(image_path: str, debug: bool = False, usar_padrao: bool = True) -> Optional[int]:
+def detectar_ano_com_ocr_direto(image_path: str, debug: bool = False) -> int:
     """
     🆕 DETECÇÃO DIRETA POR OCR - FALLBACK quando Gemini falhar!
     
@@ -1978,15 +2394,13 @@ def detectar_ano_com_ocr_direto(image_path: str, debug: bool = False, usar_padra
         debug: Se deve exibir informações de debug
         
     Returns:
-        44 (para 5° ano), 52 (para 9° ano) ou None (quando não identificar e usar_padrao=False)
+        44 (para 5° ano) ou 52 (para 9° ano)
     """
     try:
         # Carregar imagem
         img = cv2.imread(image_path)
         if img is None:
             print(f"   ⚠️ Erro ao carregar imagem para OCR direto")
-            if not usar_padrao:
-                return None
             return 52
         
         height, width = img.shape[:2]
@@ -2041,21 +2455,15 @@ def detectar_ano_com_ocr_direto(image_path: str, debug: bool = False, usar_padra
             print(f"   ✅ OCR (FALLBACK): Detectado '9 ano' no cabeçalho → 52 questões")
             return 52
         
-        # PADRÃO: Se nada for detectado, usar 52 questões (9° ano) ou retornar indefinido
+        # PADRÃO: Se nada for detectado, usar 52 questões (9° ano)
         print(f"   ⚠️ OCR (FALLBACK ATIVO): Não conseguiu detectar '5° ano' ou '9° ano' no cabeçalho")
         print(f"   ℹ️  Texto detectado: '{texto_limpo[:100]}'")  # Mostrar primeiros 100 chars
-        if not usar_padrao:
-            print(f"   🛑 Ano indefinido: encaminhar para pasta de erro")
-            return None
-
         print(f"   💡 Quando houver múltiplos cartões, o destino será determinado pela MAIORIA")
         print(f"   🎯 Usando padrão: 52 questões (9° ano)")
         return 52
         
     except Exception as e:
         print(f"   ❌ Erro no OCR direto: {e}")
-        if not usar_padrao:
-            return None
         return 52
 
 
@@ -2145,7 +2553,7 @@ def carregar_gabaritos_automatico(pasta_gabaritos: str = ".", debug: bool = Fals
     print(f"\n🔄 Processando gabarito de 44 questões...")
     try:
         caminho_44 = os.path.join(pasta_gabaritos, gabarito_44_file)
-        img_44 = preprocessar_arquivo(caminho_44, "gabarito_44")
+        img_44 = preprocessar_arquivo(caminho_44, "gabarito_44", debug=debug)
         respostas_44 = detectar_respostas_por_tipo(img_44, num_questoes=44, debug=debug, eh_gabarito=True)
         
         questoes_detectadas_44 = sum(1 for r in respostas_44 if r != '?')
@@ -2158,9 +2566,10 @@ def carregar_gabaritos_automatico(pasta_gabaritos: str = ".", debug: bool = Fals
             'respostas': respostas_44,
             'questoes_detectadas': questoes_detectadas_44
         }
-
-        print(f"\n📋 Gabarito 44 questões:")
-        exibir_gabarito_simples(respostas_44)
+        
+        if debug:
+            print(f"\n📋 Gabarito 44 questões:")
+            exibir_gabarito_simples(respostas_44)
             
     except Exception as e:
         print(f"❌ Erro ao processar gabarito de 44 questões: {e}")
@@ -2172,7 +2581,7 @@ def carregar_gabaritos_automatico(pasta_gabaritos: str = ".", debug: bool = Fals
     print(f"\n🔄 Processando gabarito de 52 questões...")
     try:
         caminho_52 = os.path.join(pasta_gabaritos, gabarito_52_file)
-        img_52 = preprocessar_arquivo(caminho_52, "gabarito_52")
+        img_52 = preprocessar_arquivo(caminho_52, "gabarito_52", debug=debug)
         respostas_52 = detectar_respostas_por_tipo(img_52, num_questoes=52, debug=debug, eh_gabarito=True)
         
         questoes_detectadas_52 = sum(1 for r in respostas_52 if r != '?')
@@ -2185,9 +2594,10 @@ def carregar_gabaritos_automatico(pasta_gabaritos: str = ".", debug: bool = Fals
             'respostas': respostas_52,
             'questoes_detectadas': questoes_detectadas_52
         }
-
-        print(f"\n📋 Gabarito 52 questões:")
-        exibir_gabarito_simples(respostas_52)
+        
+        if debug:
+            print(f"\n📋 Gabarito 52 questões:")
+            exibir_gabarito_simples(respostas_52)
             
     except Exception as e:
         print(f"❌ Erro ao processar gabarito de 52 questões: {e}")
@@ -2285,7 +2695,7 @@ def processar_cartoes_automatizado(
         try:
             # 1. Preprocessar cartão
             caminho_aluno = os.path.join(diretorio, arquivo_aluno)
-            img_aluno = preprocessar_arquivo(caminho_aluno, f"aluno_{i}")
+            img_aluno = preprocessar_arquivo(caminho_aluno, f"aluno_{i}", debug=debug)
             
             # 2. Extrair cabeçalho
             dados_aluno = {
@@ -3244,18 +3654,6 @@ def exibir_gabarito_simples(respostas_gabarito):
     """Exibe o gabarito em formato simples: 1-A, 2-B, 3-C"""
     print("\n📋 GABARITO DAS QUESTÕES:")
     print("=" * 30)
-
-    total_questoes = len(respostas_gabarito)
-    detectadas = sum(1 for r in respostas_gabarito if r != '?')
-    anuladas = total_questoes - detectadas
-
-    print(f"Total: {total_questoes} | Detectadas: {detectadas} | Não detectadas: {anuladas}")
-    if anuladas > 0:
-        questoes_nao_detectadas = [str(i + 1) for i, r in enumerate(respostas_gabarito) if r == '?']
-        print(f"⚠️ Questões não detectadas: {', '.join(questoes_nao_detectadas)}")
-    else:
-        print("✅ Todas as marcações do gabarito foram detectadas")
-    print("-" * 30)
     
     # Agrupar as questões em linhas de 10 para melhor visualização
     for i in range(0, len(respostas_gabarito), 10):
@@ -3317,7 +3715,7 @@ def processar_apenas_gabarito(DRIVER_FOLDER_9ANO: str = None, debug_mode: bool =
         
         # Preprocessar gabarito
         gabarito_path = os.path.join(diretorio_temp, gabarito_file)
-        gabarito_img = preprocessar_arquivo(gabarito_path, "gabarito")
+        gabarito_img = preprocessar_arquivo(gabarito_path, "gabarito", debug=debug_mode)
         
         # Detectar respostas do gabarito usando o tipo específico (44 ou 52 questões) com crop de gabarito
         respostas_gabarito = detectar_respostas_por_tipo(gabarito_img, num_questoes=num_questoes, debug=debug_mode, eh_gabarito=True)
@@ -3450,7 +3848,7 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
     try:
         # Preprocessar gabarito
         gabarito_path = os.path.join(diretorio_gabaritos, gabarito_file)
-        gabarito_img = preprocessar_arquivo(gabarito_path, "gabarito")
+        gabarito_img = preprocessar_arquivo(gabarito_path, "gabarito", debug=debug_mode)
         
         # Detectar respostas do gabarito usando o tipo específico (44 ou 52 questões)
         respostas_gabarito = detectar_respostas_por_tipo(gabarito_img, num_questoes=num_questoes, debug=debug_mode, eh_gabarito=True)
@@ -3458,9 +3856,6 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
         questoes_gabarito = sum(1 for r in respostas_gabarito if r != '?')
         num_questoes_detectadas = len(respostas_gabarito)
         print(f"✅ Gabarito processado: {questoes_gabarito}/{num_questoes_detectadas} questões detectadas")
-
-        # Exibir gabarito em formato simples
-        exibir_gabarito_simples(respostas_gabarito)
         
         if questoes_gabarito < 40:
             print("⚠️ ATENÇÃO: Poucas questões detectadas no gabarito.")
@@ -3486,7 +3881,7 @@ def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool 
         try:
             # Preprocessar arquivo do aluno
             aluno_path = os.path.join(diretorio_gabaritos, aluno_file)
-            aluno_img = preprocessar_arquivo(aluno_path, f"aluno_{i}")
+            aluno_img = preprocessar_arquivo(aluno_path, f"aluno_{i}", debug=debug_mode)
             
             # Extrair dados do cabeçalho (opcional com Gemini)
             dados_aluno = {
@@ -3770,7 +4165,7 @@ def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False, num
     
     try:
         # Preprocessar gabarito
-        gabarito_img = preprocessar_arquivo(gabarito_file, "gabarito")
+        gabarito_img = preprocessar_arquivo(gabarito_file, "gabarito", debug=debug_mode)
         
         # Detectar respostas do gabarito usando o tipo específico (44 ou 52 questões)
         if "page_" in gabarito_img and (gabarito_img.endswith(".png") or gabarito_img.endswith(".jpg")):
@@ -3811,7 +4206,7 @@ def processar_lote_alunos(diretorio=".", usar_gemini=True, debug_mode=False, num
         
         try:
             # Preprocessar arquivo do aluno
-            aluno_img = preprocessar_arquivo(aluno_file, f"aluno_{i}")
+            aluno_img = preprocessar_arquivo(aluno_file, f"aluno_{i}", debug=debug_mode)
             
             # Extrair dados do cabeçalho
             dados_aluno = {"Escola": "N/A", "Aluno": "N/A", "Nascimento": "N/A", "Turma": "N/A"}
@@ -4033,7 +4428,7 @@ def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_ge
     try:
         # Preprocessar gabarito
         gabarito_path = os.path.join(diretorio_gabaritos, gabarito_file)
-        gabarito_img = preprocessar_arquivo(gabarito_path, "gabarito")
+        gabarito_img = preprocessar_arquivo(gabarito_path, "gabarito", debug=debug_mode)
         
         # Detectar respostas do gabarito usando o tipo específico (44 ou 52 questões)
         respostas_gabarito = detectar_respostas_por_tipo(gabarito_img, num_questoes=num_questoes, debug=debug_mode, eh_gabarito=True)
@@ -4069,7 +4464,7 @@ def processar_pasta_gabaritos_sem_sheets(diretorio: str = "./gabaritos", usar_ge
         try:
             # Preprocessar arquivo do aluno
             aluno_path = os.path.join(diretorio_gabaritos, aluno_file)
-            aluno_img = preprocessar_arquivo(aluno_path, f"aluno_{i}")
+            aluno_img = preprocessar_arquivo(aluno_path, f"aluno_{i}", debug=debug_mode)
             
             # Extrair dados do cabeçalho (opcional com Gemini)
             dados_aluno = {
@@ -4330,7 +4725,7 @@ def processar_pasta_gabaritos_com_sheets(
     try:
         # Preprocessar gabarito
         gabarito_path = os.path.join(diretorio_gabaritos, gabarito_file)
-        gabarito_img = preprocessar_arquivo(gabarito_path, "gabarito")
+        gabarito_img = preprocessar_arquivo(gabarito_path, "gabarito", debug=debug_mode)
         
         # Detectar respostas do gabarito usando o tipo específico (44 ou 52 questões)
         respostas_gabarito = detectar_respostas_por_tipo(gabarito_img, num_questoes=num_questoes, debug=debug_mode, eh_gabarito=True)
@@ -4367,7 +4762,7 @@ def processar_pasta_gabaritos_com_sheets(
         try:
             # Preprocessar arquivo do aluno
             aluno_path = os.path.join(diretorio_gabaritos, aluno_file)
-            aluno_img = preprocessar_arquivo(aluno_path, f"aluno_{i}")
+            aluno_img = preprocessar_arquivo(aluno_path, f"aluno_{i}", debug=debug_mode)
             
             # Extrair dados do cabeçalho (opcional com Gemini)
             dados_aluno = {
@@ -4872,6 +5267,13 @@ if __name__ == "__main__":
         help="Desativa conversão automática para preto e branco"
     )
     parser.add_argument(
+        "--no-perspectiva",
+        dest="usar_perspectiva",
+        action="store_false",
+        help="Desativa a correção automática de perspectiva no pré-processamento"
+    )
+    parser.set_defaults(usar_perspectiva=True)
+    parser.add_argument(
         "--threshold",
         type=int,
         default=180,
@@ -4893,6 +5295,11 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    PERSPECTIVA_HABILITADA = args.usar_perspectiva
+
+    backend_client = None
+    if create_backend_sync_client_from_env:
+        backend_client = create_backend_sync_client_from_env()
 
 
     if PDF_PROCESSOR_AVAILABLE:
@@ -4923,18 +5330,18 @@ if __name__ == "__main__":
     print("\n💡 Certifique-se de ter 2 arquivos de gabarito (IMAGENS):")
     print("   🖼️  gabarito_44.png (ou .jpg) → Para alunos do 5° ano")
     print("   🖼️  gabarito_52.png (ou .jpg) → Para alunos do 9° ano")
+    print(f"🧭 Correção de perspectiva: {'ATIVADA' if PERSPECTIVA_HABILITADA else 'DESATIVADA (--no-perspectiva)'}")
     print("=" * 80)
 
     # 👉 Carregar IDs das pastas do Google Drive do arquivo .env
     DRIVER_FOLDER_UPLOAD = os.getenv("DRIVER_FOLDER_ID")  # Pasta de UPLOAD (origem)
     DRIVER_FOLDER_5ANO = os.getenv("DRIVER_FOLDER_5ANO")   # Pasta 5º ano (destino 44 questões)
     DRIVER_FOLDER_9ANO = os.getenv("DRIVER_FOLDER_9ANO")   # Pasta 9º ano (destino 52 questões)
-    DRIVER_FOLDER_ERROR = os.getenv("DRIVER_FOLDER_ERROR") # Pasta de ERRO (ano/marcações não identificados)
     
     # Validar se as variáveis foram carregadas
-    if not all([DRIVER_FOLDER_UPLOAD, DRIVER_FOLDER_5ANO, DRIVER_FOLDER_9ANO, DRIVER_FOLDER_ERROR]):
+    if not all([DRIVER_FOLDER_UPLOAD, DRIVER_FOLDER_5ANO, DRIVER_FOLDER_9ANO]):
         print("❌ ERRO: Variáveis de ambiente não configuradas no .env!")
-        print("   Verifique se DRIVER_FOLDER_ID, DRIVER_FOLDER_5ANO, DRIVER_FOLDER_9ANO e DRIVER_FOLDER_ERROR estão definidos.")
+        print("   Verifique se DRIVER_FOLDER_ID, DRIVER_FOLDER_5ANO e DRIVER_FOLDER_9ANO estão definidos.")
         exit(1)
     
     # Sempre usa a pasta de UPLOAD como origem
@@ -4950,7 +5357,6 @@ if __name__ == "__main__":
     print(f"\n📁 Pastas de destino configuradas:")
     print(f"   • 5° ano → {DRIVER_FOLDER_5ANO}")
     print(f"   • 9° ano → {DRIVER_FOLDER_9ANO}")
-    print(f"   • Erro (ano/marcações não identificados) → {DRIVER_FOLDER_ERROR}")
     print("=" * 80)
 
     # 🆕 MODO ESPECIAL: PDF COM MÚLTIPLAS PÁGINAS
@@ -4971,6 +5377,7 @@ if __name__ == "__main__":
         print(f"\n📄 Processando: {args.pdf_multiplo}")
         print(f"🤖 Gemini: {'ATIVADO' if usar_gemini else 'DESATIVADO'}")
         print(f"📊 Google Sheets: {'ATIVADO' if enviar_para_sheets else 'DESATIVADO'}")
+        print(f"🗄️ Backend DB: {'ATIVADO' if backend_client else 'DESATIVADO'}")
         print(f"🔍 Debug: {'ATIVADO' if debug_mode else 'DESATIVADO'}")
         print(f"\n⚠️ NOTA: Modo PDF múltiplo com sistema automatizado")
         print(f"   O sistema detectará automaticamente 44 ou 52 questões por aluno")
@@ -5004,7 +5411,7 @@ if __name__ == "__main__":
         print(f"📁 Pastas de DESTINO:")
         print(f"   • 5° ano (44 questões) → {DRIVER_FOLDER_5ANO}")
         print(f"   • 9° ano (52 questões) → {DRIVER_FOLDER_9ANO}")
-        print(f"   • Erro (ano/marcações não identificados) → {DRIVER_FOLDER_ERROR}")
+        print(f"🗄️ Sync Banco: {'ATIVADO' if backend_client else 'DESATIVADO'}")
         print("✨ Sistema detectará automaticamente o ano de cada cartão")
         print("💡 Pressione Ctrl+C para parar")
         print("=" * 60)
@@ -5154,8 +5561,6 @@ if __name__ == "__main__":
                     
                     if novos_cartoes:
                         print(f"🆕 Encontrados {len(novos_cartoes)} NOVOS cartões!")
-                        log_event(f"🔍 {len(novos_cartoes)} novo(s) cartão(ões) detectado(s)")
-                        update_status("running", progress=5)
                         for arquivo in novos_cartoes:
                             print(f"   -> {arquivo['name']} ")
                         
@@ -5217,11 +5622,10 @@ if __name__ == "__main__":
                                         status, done = downloader.next_chunk()
                                 
                                 # Processar
-                                gab44_img = preprocessar_arquivo(gab44_path, "gabarito_44")
+                                gab44_img = preprocessar_arquivo(gab44_path, "gabarito_44", debug=False)
                                 respostas_44 = detectar_respostas_por_tipo(gab44_img, num_questoes=44, debug=False, eh_gabarito=True)
                                 gabaritos_dict[44] = respostas_44
                                 print(f"   ✓ 44 questões processadas: {sum(1 for r in respostas_44 if r != '?')}/44")
-                                exibir_gabarito_simples(respostas_44)
                             else:
                                 print("❌ Gabarito de 44 questões não encontrado!")
                                 
@@ -5248,11 +5652,10 @@ if __name__ == "__main__":
                                         status, done = downloader.next_chunk()
                                 
                                 # Processar
-                                gab52_img = preprocessar_arquivo(gab52_path, "gabarito_52")
+                                gab52_img = preprocessar_arquivo(gab52_path, "gabarito_52", debug=False)
                                 respostas_52 = detectar_respostas_por_tipo(gab52_img, num_questoes=52, debug=False, eh_gabarito=True)
                                 gabaritos_dict[52] = respostas_52
                                 print(f"   ✓ 52 questões processadas: {sum(1 for r in respostas_52 if r != '?')}/52")
-                                exibir_gabarito_simples(respostas_52)
                             else:
                                 print("❌ Gabarito de 52 questões não encontrado!")
                             
@@ -5295,12 +5698,6 @@ if __name__ == "__main__":
                                 for pdf_idx, pdf_info in enumerate(pdfs_para_processar, 1):
                                     try:
                                         print(f"\n📄 [{pdf_idx}/{len(pdfs_para_processar)}] {pdf_info['name']}")
-                                        update_status(
-                                            "running",
-                                            file=pdf_info['name'],
-                                            progress=10
-                                        )
-                                        log_event(f"Processando PDF: {pdf_info['name']}")
                                         
                                         # Baixar PDF
                                         request = drive_service.files().get_media(fileId=pdf_info['id'])
@@ -5340,7 +5737,9 @@ if __name__ == "__main__":
                                         
                                         print(f"✅ Todas as páginas prontas!")
                                         
-                                        # Rastreia o destino de cada página do PDF (5°/9°/erro)
+                                        # 🆕 Variável para rastrear a pasta destino do PDF
+                                        # Se todas as páginas forem do mesmo ano, vai para aquela pasta
+                                        # Se houver páginas mistas, vai para a pasta do 9° ano
                                         pastas_detectadas = []
                                         
                                         # Processar CADA página como um aluno
@@ -5351,12 +5750,12 @@ if __name__ == "__main__":
                                         for pagina_idx, pagina_img in enumerate(imagens_paginas, 1):
                                             try:
                                                 print(f"\n🔄 Página {pagina_idx}/{len(imagens_paginas)}")
-                                                status_file_pdf = f"{pdf_info['name']} (página {pagina_idx}/{len(imagens_paginas)})"
-                                                progresso_pdf = min(95, 20 + int((pagina_idx / len(imagens_paginas)) * 70))
-                                                update_status(
-                                                    "running",
-                                                    file=status_file_pdf,
-                                                    progress=progresso_pdf
+                                                
+                                                # 🆕 Normalizar CADA página do PDF (perspectiva condicional + deskew)
+                                                pagina_img_proc = preprocessar_arquivo(
+                                                    pagina_img,
+                                                    f"aluno_pdf_{pagina_idx}",
+                                                    debug=False
                                                 )
                                                 
                                                 # 🆕 USAR EXTRAÇÃO OTIMIZADA (1 chamada única ao Gemini)
@@ -5366,8 +5765,8 @@ if __name__ == "__main__":
                                                 # PRIORIDADE 1: Tentar Gemini primeiro
                                                 if model_gemini:
                                                     dados_completos = extrair_dados_completos_com_gemini(
-                                                        model_gemini, 
-                                                        pagina_img,
+                                                        model_gemini,
+                                                        pagina_img_proc,
                                                         nome_arquivo=pdf_info['name']
                                                     )
                                                     if dados_completos:
@@ -5379,19 +5778,13 @@ if __name__ == "__main__":
                                                 # FALLBACK: Se Gemini falhar, usar OCR direto
                                                 if not num_questoes_pagina:
                                                     print(f"   ⚠️ Gemini falhou - usando OCR como fallback")
-                                                    num_questoes_pagina = detectar_ano_com_ocr_direto(
-                                                        pagina_img,
-                                                        debug=False,
-                                                        usar_padrao=False
-                                                    )
-                                                    if num_questoes_pagina in (44, 52):
-                                                        print(f"   📊 OCR (fallback) detectou: {num_questoes_pagina} questões")
-                                                    else:
-                                                        print(f"   📊 OCR (fallback) não conseguiu identificar o ano")
+                                                    print(f"   💡 A pasta de destino será definida pela MAIORIA de ocorrências")
+                                                    num_questoes_pagina = detectar_ano_com_ocr_direto(pagina_img_proc, debug=False)
+                                                    print(f"   📊 OCR (fallback) detectou: {num_questoes_pagina} questões")
                                                 
                                                 # Se dados do aluno não foram extraídos, usar OCR
                                                 if not dados_aluno:
-                                                    dados_aluno = extrair_cabecalho_com_ocr_fallback(pagina_img)
+                                                    dados_aluno = extrair_cabecalho_com_ocr_fallback(pagina_img_proc)
                                                 
                                                 if not dados_aluno or dados_aluno.get("aluno") == "N/A":
                                                     dados_aluno = {
@@ -5402,117 +5795,115 @@ if __name__ == "__main__":
                                                     }
                                                 
                                                 print(f"   🔍 DEBUG - Dados extraídos: Escola={dados_aluno.get('escola')}, Aluno={dados_aluno.get('aluno')}, Turma={dados_aluno.get('turma')}, Nasc={dados_aluno.get('nascimento')}, Questões={num_questoes_pagina}")
-                                                pasta_destino_pagina = DRIVER_FOLDER_ERROR
-
-                                                # Camada de verificação: ano não identificado com confiança
-                                                if num_questoes_pagina not in (44, 52):
-                                                    print("   ⚠️ Ano não identificado com confiança - enviando para pasta de erro")
-                                                else:
-                                                    # Selecionar gabarito correto para esta página
-                                                    respostas_gabarito_correto = gabaritos_dict.get(num_questoes_pagina)
-                                                    if not respostas_gabarito_correto:
-                                                        print(f"   ❌ Gabarito de {num_questoes_pagina} questões não disponível - enviando para pasta de erro")
-                                                    else:
-                                                        # Detectar respostas (usando número detectado para esta página)
-                                                        respostas_aluno = detectar_respostas_por_tipo(
-                                                            pagina_img,
-                                                            num_questoes=num_questoes_pagina,
-                                                            debug=False
-                                                        )
-
-                                                        questoes_detectadas = sum(1 for r in respostas_aluno if r != '?')
-                                                        minimo_detectado = int(num_questoes_pagina * 0.5)
-
-                                                        # Camada de verificação: poucas marcações detectadas
-                                                        if questoes_detectadas < minimo_detectado:
-                                                            print(f"   ⚠️ Poucas questões detectadas ({questoes_detectadas}/{num_questoes_pagina}) - enviando para pasta de erro")
-                                                        else:
-                                                            # Comparar com gabarito correto
-                                                            resultado = comparar_respostas(respostas_gabarito_correto, respostas_aluno)
-
-                                                            # Exibir resumo formatado com respostas do aluno
-                                                            print(f"\n{'─'*60}")
-                                                            print(f"👤 {dados_aluno.get('aluno', 'N/A')}")
-                                                            print(f"📚 Turma: {dados_aluno.get('turma', 'N/A')} | Escola: {dados_aluno.get('escola', 'N/A')}")
-                                                            print(f"✅ Acertos: {resultado['acertos']}")
-                                                            print(f"❌ Erros: {resultado['erros']}")
-                                                            if resultado.get('anuladas', 0) > 0:
-                                                                print(f"⊘ Questões anuladas: {resultado['anuladas']}")
-                                                            print(f"📊 Percentual: {resultado['percentual']:.1f}%")
-
-                                                            # Exibir respostas do aluno
-                                                            print(f"\n📝 Respostas:")
-                                                            exibir_gabarito_simples(respostas_aluno)
-                                                            print(f"{'─'*60}")
-
-                                                            if num_questoes_pagina == 44:
-                                                                pasta_destino_pagina = DRIVER_FOLDER_5ANO
-                                                                print(f"   📁 Destino: Pasta 5° ano")
-                                                            else:
-                                                                pasta_destino_pagina = DRIVER_FOLDER_9ANO
-                                                                print(f"   📁 Destino: Pasta 9° ano")
-
-                                                            # Enviar para Sheets (já escolhe planilha correta automaticamente)
-                                                            if client and PLANILHA_ID:
-                                                                dados_envio = {
-                                                                    "Escola": dados_aluno.get("escola", "N/A"),
-                                                                    "Aluno": dados_aluno.get("aluno", "N/A"),
-                                                                    "Nascimento": dados_aluno.get("nascimento", "N/A"),
-                                                                    "Turma": dados_aluno.get("turma", "N/A")
-                                                                }
-                                                                enviar_para_planilha(client, dados_envio, resultado, PLANILHA_ID, questoes_detectadas=questoes_detectadas)
-
-                                                            finish_correction(f"{pdf_info['name']}_pag{pagina_idx}")
-                                                            log_event(f"Correção concluída: {pdf_info['name']}_pag{pagina_idx}")
-
-                                                if pasta_destino_pagina == DRIVER_FOLDER_ERROR:
-                                                    print("   📁 Destino: Pasta de erro")
-
-                                                # Registrar pasta final detectada para esta página
+                                                
+                                                # 🆕 SELECIONAR PASTA DE DESTINO BASEADA NO ANO DETECTADO
+                                                if num_questoes_pagina == 44:
+                                                    pasta_destino_pagina = DRIVER_FOLDER_5ANO
+                                                    print(f"   📁 Destino: Pasta 5° ano")
+                                                else:  # 52 questões
+                                                    pasta_destino_pagina = DRIVER_FOLDER_9ANO
+                                                    print(f"   📁 Destino: Pasta 9° ano")
+                                                
+                                                # 🆕 Registrar pasta detectada para esta página
                                                 pastas_detectadas.append(pasta_destino_pagina)
+                                                
+                                                # 🆕 SELECIONAR GABARITO CORRETO PARA ESTA PÁGINA
+                                                respostas_gabarito_correto = gabaritos_dict.get(num_questoes_pagina)
+                                                if not respostas_gabarito_correto:
+                                                    print(f"   ❌ Gabarito de {num_questoes_pagina} questões não disponível!")
+                                                    continue
+                                                
+                                                # Detectar respostas (usando número detectado para esta página)
+                                                respostas_aluno = detectar_respostas_por_tipo(
+                                                    pagina_img_proc, 
+                                                    num_questoes=num_questoes_pagina, 
+                                                    debug=False
+                                                )
+                                                
+                                                questoes_detectadas = sum(1 for r in respostas_aluno if r != '?')
+                                                
+                                                # Verificar detecção mínima
+                                                if questoes_detectadas < num_questoes_pagina * 0.5:
+                                                    print(f"   ⚠️ Poucas questões detectadas ({questoes_detectadas}/{num_questoes_pagina}) - IGNORADO")
+                                                    continue
+                                                
+                                                # Comparar com gabarito correto
+                                                resultado = comparar_respostas(respostas_gabarito_correto, respostas_aluno)
+                                                
+                                                # Exibir resumo formatado com respostas do aluno
+                                                print(f"\n{'─'*60}")
+                                                print(f"👤 {dados_aluno.get('aluno', 'N/A')}")
+                                                print(f"📚 Turma: {dados_aluno.get('turma', 'N/A')} | Escola: {dados_aluno.get('escola', 'N/A')}")
+                                                print(f"✅ Acertos: {resultado['acertos']}")
+                                                print(f"❌ Erros: {resultado['erros']}")
+                                                if resultado.get('anuladas', 0) > 0:
+                                                    print(f"⊘ Questões anuladas: {resultado['anuladas']}")
+                                                print(f"📊 Percentual: {resultado['percentual']:.1f}%")
+                                                
+                                                # Exibir respostas do aluno
+                                                print(f"\n📝 Respostas:")
+                                                exibir_gabarito_simples(respostas_aluno)
+                                                print(f"{'─'*60}")
+                                                
+                                                # 🆕 SELECIONAR PASTA DE DESTINO BASEADA NO ANO DETECTADO
+                                                if num_questoes_pagina == 44:
+                                                    pasta_destino_pagina = DRIVER_FOLDER_5ANO
+                                                    print(f"   📁 Destino: Pasta 5° ano")
+                                                else:  # 52 questões
+                                                    pasta_destino_pagina = DRIVER_FOLDER_9ANO
+                                                    print(f"   📁 Destino: Pasta 9° ano")
+                                                
+                                                # Enviar para Sheets (já escolhe planilha correta automaticamente)
+                                                if client and PLANILHA_ID:
+                                                    dados_envio = {
+                                                        "Escola": dados_aluno.get("escola", "N/A"),
+                                                        "Aluno": dados_aluno.get("aluno", "N/A"),
+                                                        "Nascimento": dados_aluno.get("nascimento", "N/A"),
+                                                        "Turma": dados_aluno.get("turma", "N/A")
+                                                    }
+                                                    enviar_para_planilha(client, dados_envio, resultado, PLANILHA_ID, questoes_detectadas=questoes_detectadas)
+
+                                                enviar_resultado_para_backend(
+                                                    backend_client=backend_client,
+                                                    drive_file_id=f"{pdf_info['id']}:pagina:{pagina_idx}",
+                                                    file_name=f"{pdf_info['name']}#pagina_{pagina_idx}",
+                                                    dados_aluno=dados_aluno,
+                                                    respostas_aluno=respostas_aluno,
+                                                    respostas_gabarito=respostas_gabarito_correto,
+                                                    resultado=resultado,
+                                                    questoes_detectadas=questoes_detectadas,
+                                                    origem="monitor_drive_pdf",
+                                                )
                                                 
                                             except Exception as e:
                                                 print(f"   ❌ Erro na página {pagina_idx}: {e}")
-                                                update_status("error", file=status_file_pdf)
-                                                log_event(f"❌ Erro na página {pagina_idx} de {pdf_info['name']}: {e}")
                                         
                                         # Limpar imagens temporárias do PDF
                                         
-                                        # Definir destino final do PDF por maioria entre 5°/9°/erro
+                                        # Se todas as páginas forem do mesmo ano, vai para aquela pasta
+                                        # Se houver mix, determina pela maioria (número de ocorrências)
                                         if not pastas_detectadas:
-                                            pasta_destino_pdf = DRIVER_FOLDER_ERROR
-                                            num_questoes_pdf = None
-                                            print(f"\n📁 PDF sem páginas válidas - enviando para pasta de erro")
+                                            pasta_destino_pdf = DRIVER_FOLDER_9ANO  # Padrão
+                                            num_questoes_pdf = 52
+                                        elif len(set(pastas_detectadas)) == 1:
+                                            # Todas as páginas do mesmo ano
+                                            pasta_destino_pdf = pastas_detectadas[0]
+                                            num_questoes_pdf = 44 if pasta_destino_pdf == DRIVER_FOLDER_5ANO else 52
+                                            ano_str = "5° ano" if num_questoes_pdf == 44 else "9° ano"
+                                            print(f"\n📁 PDF será movido para: {ano_str} (todas as páginas são do mesmo ano)")
                                         else:
+                                            # Mix de anos - determina pela MAIORIA (número de ocorrências)
                                             count_5ano = pastas_detectadas.count(DRIVER_FOLDER_5ANO)
                                             count_9ano = pastas_detectadas.count(DRIVER_FOLDER_9ANO)
-                                            count_erro = pastas_detectadas.count(DRIVER_FOLDER_ERROR)
-
-                                            maior = max(count_5ano, count_9ano, count_erro)
-                                            empatados = []
-                                            if count_5ano == maior:
-                                                empatados.append(DRIVER_FOLDER_5ANO)
-                                            if count_9ano == maior:
-                                                empatados.append(DRIVER_FOLDER_9ANO)
-                                            if count_erro == maior:
-                                                empatados.append(DRIVER_FOLDER_ERROR)
-
-                                            if len(empatados) > 1:
-                                                pasta_destino_pdf = DRIVER_FOLDER_ERROR
-                                                num_questoes_pdf = None
-                                                print(f"\n📁 PDF com empate de classificação ({count_5ano}x5° / {count_9ano}x9° / {count_erro}xerro) - enviando para pasta de erro")
-                                            elif empatados[0] == DRIVER_FOLDER_5ANO:
+                                            
+                                            if count_5ano > count_9ano:
                                                 pasta_destino_pdf = DRIVER_FOLDER_5ANO
                                                 num_questoes_pdf = 44
-                                                print(f"\n📁 PDF será movido para: 5° ano ({count_5ano} págs 5° / {count_9ano} págs 9° / {count_erro} págs erro)")
-                                            elif empatados[0] == DRIVER_FOLDER_9ANO:
+                                                print(f"\n📁 PDF será movido para: 5° ano ({count_5ano} páginas de 5° ano vs {count_9ano} de 9° ano)")
+                                            else:
                                                 pasta_destino_pdf = DRIVER_FOLDER_9ANO
                                                 num_questoes_pdf = 52
-                                                print(f"\n📁 PDF será movido para: 9° ano ({count_9ano} págs 9° / {count_5ano} págs 5° / {count_erro} págs erro)")
-                                            else:
-                                                pasta_destino_pdf = DRIVER_FOLDER_ERROR
-                                                num_questoes_pdf = None
-                                                print(f"\n📁 PDF será movido para: pasta de erro ({count_erro} páginas com falha)")
+                                                print(f"\n📁 PDF será movido para: 9° ano ({count_9ano} páginas de 9° ano vs {count_5ano} de 5° ano)")
                                         
                                         # Marcar PDF como processado (ID + NOME + PASTA DESTINO)
                                         nome_sem_ext = os.path.splitext(pdf_info['name'])[0].lower()
@@ -5527,8 +5918,6 @@ if __name__ == "__main__":
                                         
                                     except Exception as e:
                                         print(f"   ❌ Erro ao processar PDF: {e}")
-                                        update_status("error", file=pdf_info['name'])
-                                        log_event(f"❌ Erro ao processar PDF {pdf_info['name']}: {e}")
                                         import traceback
                                         traceback.print_exc()
                             
@@ -5543,8 +5932,6 @@ if __name__ == "__main__":
                                 for img_idx, cartao_info in enumerate(imagens_para_processar, 1):
                                     try:
                                         print(f"\n🔄 [{img_idx}/{len(imagens_para_processar)}] {cartao_info['name']}")
-                                        update_status("running", file=cartao_info['name'], progress=20)
-                                        log_event(f"Processando imagem: {cartao_info['name']}")
                                         
                                         # Baixar imagem
                                         request = drive_service.files().get_media(fileId=cartao_info['id'])
@@ -5560,7 +5947,7 @@ if __name__ == "__main__":
                                             cartao_path = converter_para_preto_e_branco(cartao_path, threshold=threshold_pb, salvar=True)
                                         
                                         # Processar cartão
-                                        aluno_img = preprocessar_arquivo(cartao_path, f"aluno_{img_idx}")
+                                        aluno_img = preprocessar_arquivo(cartao_path, f"aluno_{img_idx}", debug=False)
                                         
                                         # 🆕 USAR EXTRAÇÃO OTIMIZADA (1 chamada única ao Gemini)
                                         num_questoes_aluno = None
@@ -5578,20 +5965,13 @@ if __name__ == "__main__":
                                                 num_questoes_aluno = dados_completos.get('num_questoes')
                                                 if num_questoes_aluno:
                                                     print(f"   ✅ Gemini detectou com sucesso: {num_questoes_aluno} questões")
-                                                    update_status("running", file=cartao_info['name'], progress=60)
                                         
                                         # FALLBACK: Se Gemini falhar, usar OCR direto
                                         if not num_questoes_aluno:
                                             print(f"   ⚠️ Gemini falhou - usando OCR como fallback")
-                                            num_questoes_aluno = detectar_ano_com_ocr_direto(
-                                                aluno_img,
-                                                debug=False,
-                                                usar_padrao=False
-                                            )
-                                            if num_questoes_aluno in (44, 52):
-                                                print(f"   📊 OCR (fallback) detectou: {num_questoes_aluno} questões")
-                                            else:
-                                                print(f"   📊 OCR (fallback) não conseguiu identificar o ano")
+                                            print(f"   💡 A pasta de destino será definida corretamente")
+                                            num_questoes_aluno = detectar_ano_com_ocr_direto(aluno_img, debug=False)
+                                            print(f"   📊 OCR (fallback) detectou: {num_questoes_aluno} questões")
                                         
                                         # Se dados do aluno não foram extraídos, usar OCR
                                         if not dados_aluno:
@@ -5606,66 +5986,63 @@ if __name__ == "__main__":
                                             }
                                         
                                         print(f"   🔍 DEBUG - Dados extraídos: Escola={dados_aluno.get('escola')}, Aluno={dados_aluno.get('aluno')}, Turma={dados_aluno.get('turma')}, Nasc={dados_aluno.get('nascimento')}, Questões={num_questoes_aluno}")
-                                        pasta_destino_atual = DRIVER_FOLDER_ERROR
+                                        
+                                        # 🆕 SELECIONAR PASTA DE DESTINO BASEADA NO ANO DETECTADO
+                                        if num_questoes_aluno == 44:
+                                            pasta_destino_atual = DRIVER_FOLDER_5ANO
+                                            print(f"   📁 Destino: Pasta 5° ano (44 questões)")
+                                        else:  # 52 questões
+                                            pasta_destino_atual = DRIVER_FOLDER_9ANO
+                                            print(f"   📁 Destino: Pasta 9° ano (52 questões)")
+                                        
+                                        # Detectar respostas (usando número detectado)
+                                        respostas_aluno = detectar_respostas_por_tipo(aluno_img, num_questoes=num_questoes_aluno, debug=False)
+                                        questoes_detectadas = sum(1 for r in respostas_aluno if r != '?')
+                                        
+                                        # 🆕 COMPARAR COM O GABARITO CORRETO
+                                        respostas_gabarito_correto = gabaritos_dict.get(num_questoes_aluno)
+                                        if not respostas_gabarito_correto:
+                                            print(f"   ❌ Gabarito de {num_questoes_aluno} questões não disponível!")
+                                            continue
+                                        
+                                        resultado = comparar_respostas(respostas_gabarito_correto, respostas_aluno)
+                                        
+                                        # Exibir resumo formatado
+                                        print(f"\n{'─'*60}")
+                                        print(f"👤 {dados_aluno.get('aluno', 'N/A')}")
+                                        print(f"📚 Turma: {dados_aluno.get('turma', 'N/A')} | Escola: {dados_aluno.get('escola', 'N/A')}")
+                                        print(f"✅ Acertos: {resultado['acertos']}")
+                                        print(f"❌ Erros: {resultado['erros']}")
+                                        if resultado.get('anuladas', 0) > 0:
+                                            print(f"⊘ Questões anuladas: {resultado['anuladas']}")
+                                        print(f"📊 Percentual: {resultado['percentual']:.1f}%")
+                                        
+                                        # Exibir respostas do aluno
+                                        print(f"\n📝 Respostas:")
+                                        exibir_gabarito_simples(respostas_aluno)
+                                        print(f"{'─'*60}")
+                                        
+                                        # Enviar para Google Sheets
+                                        if client and PLANILHA_ID:
+                                            dados_envio = {
+                                                "Escola": dados_aluno.get("escola", "N/A"),
+                                                "Aluno": dados_aluno.get("aluno", "N/A"),
+                                                "Nascimento": dados_aluno.get("nascimento", "N/A"),
+                                                "Turma": dados_aluno.get("turma", "N/A")
+                                            }
+                                            enviar_para_planilha(client, dados_envio, resultado, PLANILHA_ID, questoes_detectadas=questoes_detectadas)
 
-                                        if num_questoes_aluno not in (44, 52):
-                                            print("   ⚠️ Ano não identificado com confiança - enviando para pasta de erro")
-                                        else:
-                                            # Detectar respostas (usando número detectado)
-                                            respostas_aluno = detectar_respostas_por_tipo(
-                                                aluno_img,
-                                                num_questoes=num_questoes_aluno,
-                                                debug=False
-                                            )
-                                            questoes_detectadas = sum(1 for r in respostas_aluno if r != '?')
-                                            minimo_detectado = int(num_questoes_aluno * 0.5)
-
-                                            if questoes_detectadas < minimo_detectado:
-                                                print(f"   ⚠️ Poucas questões detectadas ({questoes_detectadas}/{num_questoes_aluno}) - enviando para pasta de erro")
-                                            else:
-                                                # Comparar com o gabarito correto
-                                                respostas_gabarito_correto = gabaritos_dict.get(num_questoes_aluno)
-                                                if not respostas_gabarito_correto:
-                                                    print(f"   ❌ Gabarito de {num_questoes_aluno} questões não disponível - enviando para pasta de erro")
-                                                else:
-                                                    resultado = comparar_respostas(respostas_gabarito_correto, respostas_aluno)
-
-                                                    # Exibir resumo formatado
-                                                    print(f"\n{'─'*60}")
-                                                    print(f"👤 {dados_aluno.get('aluno', 'N/A')}")
-                                                    print(f"📚 Turma: {dados_aluno.get('turma', 'N/A')} | Escola: {dados_aluno.get('escola', 'N/A')}")
-                                                    print(f"✅ Acertos: {resultado['acertos']}")
-                                                    print(f"❌ Erros: {resultado['erros']}")
-                                                    if resultado.get('anuladas', 0) > 0:
-                                                        print(f"⊘ Questões anuladas: {resultado['anuladas']}")
-                                                    print(f"📊 Percentual: {resultado['percentual']:.1f}%")
-
-                                                    # Exibir respostas do aluno
-                                                    print(f"\n📝 Respostas:")
-                                                    exibir_gabarito_simples(respostas_aluno)
-                                                    print(f"{'─'*60}")
-
-                                                    if num_questoes_aluno == 44:
-                                                        pasta_destino_atual = DRIVER_FOLDER_5ANO
-                                                        print(f"   📁 Destino: Pasta 5° ano (44 questões)")
-                                                    else:
-                                                        pasta_destino_atual = DRIVER_FOLDER_9ANO
-                                                        print(f"   📁 Destino: Pasta 9° ano (52 questões)")
-
-                                                    # Enviar para Google Sheets
-                                                    if client and PLANILHA_ID:
-                                                        dados_envio = {
-                                                            "Escola": dados_aluno.get("escola", "N/A"),
-                                                            "Aluno": dados_aluno.get("aluno", "N/A"),
-                                                            "Nascimento": dados_aluno.get("nascimento", "N/A"),
-                                                            "Turma": dados_aluno.get("turma", "N/A")
-                                                        }
-                                                        enviar_para_planilha(client, dados_envio, resultado, PLANILHA_ID, questoes_detectadas=questoes_detectadas)
-                                                        finish_correction(cartao_info['name'])  # 🆕 Atualiza estado do bot para correção concluída
-                                                        log_event(f"Correção concluída: {cartao_info['name']}")
-
-                                        if pasta_destino_atual == DRIVER_FOLDER_ERROR:
-                                            print("   📁 Destino: Pasta de erro")
+                                        enviar_resultado_para_backend(
+                                            backend_client=backend_client,
+                                            drive_file_id=cartao_info['id'],
+                                            file_name=cartao_info['name'],
+                                            dados_aluno=dados_aluno,
+                                            respostas_aluno=respostas_aluno,
+                                            respostas_gabarito=respostas_gabarito_correto,
+                                            resultado=resultado,
+                                            questoes_detectadas=questoes_detectadas,
+                                            origem="monitor_drive_imagem",
+                                        )
                                         
                                         # Marcar como processado (ID + NOME + PASTA DESTINO)
                                         nome_sem_ext = os.path.splitext(cartao_info['name'])[0].lower()
@@ -5674,33 +6051,24 @@ if __name__ == "__main__":
                                             'nome_sem_ext': nome_sem_ext,
                                             'nome_original': cartao_info['name'],
                                             'pasta_destino': pasta_destino_atual,  # 🆕 Guardar pasta específica
-                                            'num_questoes': num_questoes_aluno if num_questoes_aluno in (44, 52) else None
+                                            'num_questoes': num_questoes_aluno  # 🆕 Guardar número de questões
                                         })
                                         
                                     except Exception as e:
                                         print(f"   ❌ Erro: {e}")
-                                        update_status("error", file=cartao_info['name'])
-                                        log_event(f"❌ Erro em {cartao_info['name']}: {e}")
                             
-                            # 3. Mover arquivos processados no Drive para pasta correta (5º, 9º ou erro)
+                            # 3. Mover arquivos processados no Drive para pasta correta (5º ou 9º ano)
                             if mover_processados and arquivos_processados_agora:
                                 print(f"\n📦 Movendo {len(arquivos_processados_agora)} cartões para pastas de destino...")
                                 
                                 # 🆕 MOVER CADA ARQUIVO PARA SUA PASTA ESPECÍFICA
                                 for arquivo_proc in arquivos_processados_agora:
                                     pasta_destino_arquivo = arquivo_proc.get('pasta_destino')
+                                    num_questoes_arquivo = arquivo_proc.get('num_questoes', 52)
                                     
                                     if pasta_destino_arquivo:
-                                        if pasta_destino_arquivo == DRIVER_FOLDER_5ANO:
-                                            destino_str = "5° ano"
-                                        elif pasta_destino_arquivo == DRIVER_FOLDER_9ANO:
-                                            destino_str = "9° ano"
-                                        elif pasta_destino_arquivo == DRIVER_FOLDER_ERROR:
-                                            destino_str = "pasta de erro"
-                                        else:
-                                            destino_str = "pasta desconhecida"
-
-                                        print(f"   📁 {arquivo_proc['nome_original']} → {destino_str}")
+                                        ano_str = "5° ano" if num_questoes_arquivo == 44 else "9° ano"
+                                        print(f"   📁 {arquivo_proc['nome_original']} → {ano_str}")
                                         
                                         mover_arquivo_no_drive(
                                             drive_service,
@@ -5755,15 +6123,11 @@ if __name__ == "__main__":
                             shutil.rmtree(pasta_temp, ignore_errors=True)
                             
                             print(f"\n✅ Processamento concluído!")
-                            update_status("idle")
-                            log_event(f"Processamento de {len(arquivos_processados_agora)} arquivo(s) concluído(s)")
                             print(f"📊 Novos processados: {len(arquivos_processados_agora)}")
                             print(f"📝 Total no histórico: {len(historico['ids'])} IDs / {len(historico['nomes'])} Nomes")
                                 
                         except Exception as e:
                             print(f"❌ Erro durante processamento: {e}")
-                            update_status("error")
-                            log_event(f"❌ Erro durante processamento: {e}")
                             import traceback
                             traceback.print_exc()
                             print("🔄 Continuando monitoramento...")

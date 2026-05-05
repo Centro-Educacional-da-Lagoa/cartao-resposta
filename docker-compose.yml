@@ -1,18 +1,18 @@
 services:
-  # Serviço 1: A sua API FastAPI para frontend
+  # Serviço 1: A sua API FastAPI
   api:
     build: .
     command: python -u api_rest.py
     ports:
       - "5000:5000"
     volumes:
-      - .:/usr/src/app
+      - .:/app
 
-  # Serviço 2: script de monitoramento principal
+  # Serviço 2: O seu script de monitoramento
   monitor:
     build: .
     command: python -u script.py --monitor --intervalo 1
     volumes:
-      - .:/usr/src/app
+      - .:/app
     depends_on:
       - api

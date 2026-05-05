@@ -7,10 +7,12 @@
 - ✅ **Detecção automática** de gabaritos e folhas de resposta
 - 🤖 **Extração de cabeçalho** com Google Gemini AI
 - 📊 **Integração com Google Sheets** para armazenamento automático
+- 🗄️ **Integração com backend NestJS + PostgreSQL** para persistência oficial
 - ☁️ **Sincronização com Google Drive** (download automático da pasta configurada)
 - 🎯 **Alta precisão** na detecção de respostas marcadas
 - 📁 **Processamento em lote** de múltiplos alunos
 - 🔄 **Rate limiting** integrado para APIs
+- 📐 **Correção de perspectiva automática condicional** (estilo scanner)
 - 🐛 **Modo debug** com visualização detalhada
 - 📱 **Suporte a PDF e imagens** (PNG, JPG, JPEG)
 
@@ -84,6 +86,27 @@ pip install -r requirements.txt
    DRIVER_FOLDER_9ANO="Sua_key_aqui"
    DRIVER_FOLDER_5ANO="Sua_key_aqui"
    GOOGLE_CREDENTIALS_JSON='{"type":"service_account","project_id":"...","private_key_id":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n","client_email":"...","client_id":"...","auth_uri":"...","token_uri":"...","auth_provider_x509_cert_url":"...","client_x509_cert_url":"...", "universe_domain":"googleapis.com"}'
+
+### 3. (Opcional) Sincronizar com o banco via backend NestJS
+
+Adicione no `.env`:
+
+```env
+BACKEND_SYNC_ENABLED=true
+BACKEND_BASE_URL=http://localhost:3001
+BACKEND_USER_EMAIL=admin@example.com
+BACKEND_USER_PASSWORD=Admin@1234
+BACKEND_SYNC_TIMEOUT_SECONDS=20
+```
+
+Com isso, cada cartão processado também é enviado para:
+
+- `POST /api/v1/cartao-resposta/leituras`
+
+Observações:
+
+- O usuário do backend precisa da permissão `CartoesResposta.create`.
+- O envio pode usar `turmaId/alunoId` (se disponíveis) ou `turmaNome/alunoNome` para resolução por matrícula.
 
 OBS: A biblioteca do .env será instalada automaticamente após executar o requirements.txt
 
@@ -187,6 +210,40 @@ ATENÇÃO: Se você apagar esse arquivo ou o ID, o bot vai considerar que nenhum
 ```bash
 python script.py --monitor --intervalo 1
 ```
+
+### 🧭 Correção automática de perspectiva (v1)
+
+O pré-processamento agora aplica, por padrão:
+
+1. Retificação de perspectiva condicional (4 pontos, estilo scanner)
+2. Correção de rotação (deskew)
+
+Se a confiança geométrica da perspectiva não for suficiente, o sistema **não força warp** e segue com deskew.
+
+Para desativar a perspectiva (rollback operacional), use:
+
+```bash
+python script.py --monitor --intervalo 1 --no-perspectiva
+```
+
+### 🧪 Teste visual sob demanda (folhas tortas vs ajustadas)
+
+Use o script abaixo para gerar inspeção visual em lote:
+
+```bash
+python teste_visual_perspectiva.py --input <pasta_imagens> --output <pasta_debug>
+```
+
+Saída gerada por imagem:
+
+- `01_original`: imagem original
+- `02_cantos_detectados`: contorno/cantos detectados
+- `03_retificada`: imagem após warp de perspectiva
+- `04_comparativo`: lado a lado (original vs retificada)
+- `05_normalizada_final`: resultado final após cadeia completa (perspectiva + deskew)
+
+Também é gerado `resumo_processamento.txt` na pasta de saída com status por arquivo:
+`applied`, `ignored` ou `fallback`.
 
 
 

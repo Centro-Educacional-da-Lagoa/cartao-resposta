@@ -13,6 +13,8 @@
 - 📁 **Processamento em lote** de múltiplos alunos
 - 🔄 **Rate limiting** integrado para APIs
 - 📐 **Correção de perspectiva automática condicional** (estilo scanner)
+- 📍 **Recorte da área de respostas por quadrados de alinhamento**
+- 🧹 **Filtros extras contra ruídos em cartões de 44 questões**
 - 🐛 **Modo debug** com visualização detalhada
 - 📱 **Suporte a PDF e imagens** (PNG, JPG, JPEG)
 
@@ -22,7 +24,7 @@
 1. **Processamento**: Extrai respostas usando visão computacional e clustering
 2. **Cabeçalho**: Usa Google Gemini para extrair dados do aluno (nome, escola, turma, nascimento)
 3. **Correção**: Compara respostas do aluno com o gabarito
-4. **Resultados**: Envia automaticamente para Google Sheets
+4. **Resultados**: Envia automaticamente para Google Sheets e, quando configurado, para o backend
 
 ### 1. Clone o repositório
 
@@ -244,6 +246,18 @@ Saída gerada por imagem:
 
 Também é gerado `resumo_processamento.txt` na pasta de saída com status por arquivo:
 `applied`, `ignored` ou `fallback`.
+
+### 🆕 Atualizações recentes no processamento
+
+O processamento de OMR recebeu ajustes para deixar a leitura dos gabaritos mais estável:
+
+- **Quadrados de alinhamento**: o sistema tenta localizar os 4 quadrados pretos ao redor da área de respostas. Quando encontra, exibe `ROI por marcadores: warp=... | crop=...` e usa esses pontos para corrigir a perspectiva e recortar somente as alternativas.
+- **Fallback seguro**: se os quadrados não forem encontrados, o bot não força a perspectiva. Ele mantém o fluxo legado com crop proporcional e registra no debug que os marcadores não foram localizados.
+- **Marcadores ignorados como bolha**: os quadrados de alinhamento detectados nas bordas são descartados durante a leitura para não entrarem como respostas marcadas.
+- **Cartões de 44 questões**: foi adicionado um filtro específico para reduzir ruídos de números, letras e linhas da tabela. Esse filtro ignora a faixa dos números das questões dentro de cada coluna e exige tamanho, preenchimento e circularidade compatíveis com uma bolha preenchida.
+- **Cartões de 52 questões**: o crop proporcional de fallback foi ajustado para preservar melhor a borda direita quando o cartão não usa marcadores confiáveis.
+- **Debug no monitor**: quando o modo debug está ativo, o processamento de gabaritos, PDFs e imagens individuais propaga esse modo para facilitar a inspeção de perspectiva, OCR e OMR.
+- **Sincronização com backend**: além do Google Sheets, o resultado pode ser enviado ao backend configurado no `.env`, incluindo respostas normalizadas, gabarito, dados do aluno e resumo de acertos/erros.
 
 
 

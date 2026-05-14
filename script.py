@@ -79,6 +79,7 @@ DRIVE_MIME_TO_EXT = {
 
 # Kill switch global para retificação de perspectiva (padrão: ativo)
 PERSPECTIVA_HABILITADA = True
+CARTOES_SEM_QUADRADOS_ALINHAMENTO = set()
 
 def normalizar_respostas_backend(respostas: List[str]) -> List[str]:
     normalizadas = []
@@ -631,6 +632,52 @@ def corrigir_rotacao_documento(image_path: str, debug: bool = False) -> str:
         return image_path
 
 
+def _tem_quadrados_alinhamento(image_path: str, debug: bool = False) -> bool:
+    img_cv = cv2.imread(image_path)
+    if img_cv is None:
+        if debug:
+            print("   ⚠️ Não foi possível avaliar quadrados de alinhamento; mantendo fluxo atual.")
+        return True
+
+    try:
+        tem_marcadores = detectar_marcadores_area_respostas(img_cv) is not None
+    except Exception as e:
+        if debug:
+            print(f"   ⚠️ Erro ao avaliar quadrados de alinhamento; mantendo fluxo atual: {e}")
+        return True
+
+    if debug and not tem_marcadores:
+        print(
+            "   🧭 Cartão sem quadrados de alinhamento detectáveis; "
+            "perspectiva desativada e crop legado mantido."
+        )
+    return tem_marcadores
+
+
+def _chave_caminho(path: str):
+    if not path:
+        return ""
+
+    caminho_absoluto = os.path.abspath(path)
+    try:
+        stat = os.stat(caminho_absoluto)
+        timestamp = getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1000000000))
+        return (caminho_absoluto, stat.st_size, timestamp)
+    except OSError:
+        return (caminho_absoluto, None, None)
+
+
+def _registrar_crop_legado_sem_quadrados(*paths: str) -> None:
+    for path in paths:
+        chave = _chave_caminho(path)
+        if chave:
+            CARTOES_SEM_QUADRADOS_ALINHAMENTO.add(chave)
+
+
+def _deve_forcar_crop_legado_sem_quadrados(image_path: str) -> bool:
+    return _chave_caminho(image_path) in CARTOES_SEM_QUADRADOS_ALINHAMENTO
+
+
 def normalizar_documento_para_omr(
     image_path: str,
     aplicar_perspectiva: bool = True,
@@ -644,6 +691,13 @@ def normalizar_documento_para_omr(
     """
     perspectiva_result: Dict[str, object]
     caminho_base = image_path
+    motivo_perspectiva_desativada = "Perspectiva desativada por configuração"
+    sem_quadrados_alinhamento = False
+
+    if aplicar_perspectiva and not _tem_quadrados_alinhamento(image_path, debug=debug):
+        aplicar_perspectiva = False
+        motivo_perspectiva_desativada = "Perspectiva desativada: cartão sem quadrados de alinhamento"
+        sem_quadrados_alinhamento = True
 
     if aplicar_perspectiva:
         perspectiva_result = corrigir_perspectiva_documento(
@@ -658,13 +712,16 @@ def normalizar_documento_para_omr(
             "output_path": image_path,
             "aplicada": False,
             "status": "ignored",
-            "motivo": "Perspectiva desativada por configuração",
+            "motivo": motivo_perspectiva_desativada,
             "metricas": {},
             "debug_paths": {},
         }
 
     caminho_final = corrigir_rotacao_documento(caminho_base, debug=False)
     deskew_aplicado = caminho_final != caminho_base
+
+    if sem_quadrados_alinhamento:
+        _registrar_crop_legado_sem_quadrados(image_path, caminho_base, caminho_final)
 
     status_visual = str(perspectiva_result.get("status", "ignored"))
     if status_visual not in {"applied", "ignored", "fallback"}:
@@ -818,7 +875,13 @@ def analisar_qualidade_marcacao(gray, contorno) -> dict:
     # Bounding box
     x, y, w, h = cv2.boundingRect(contorno)
     aspect_ratio = w / h if h > 0 else 0
-    
+    area_bbox = float(w * h) if w > 0 and h > 0 else 0.0
+    extent = area / area_bbox if area_bbox > 0 else 0.0
+    approx_vertices = 0
+    if perimetro > 0:
+        approx = cv2.approxPolyDP(contorno, 0.035 * perimetro, True)
+        approx_vertices = len(approx)
+
     # Intensidade média
     mask = np.zeros(gray.shape, dtype=np.uint8)
     cv2.drawContours(mask, [contorno], -1, 255, -1)
@@ -835,6 +898,9 @@ def analisar_qualidade_marcacao(gray, contorno) -> dict:
         'area': area,
         'circularidade': circularidade,
         'aspect_ratio': aspect_ratio,
+        'bbox': (x, y, w, h),
+        'extent': extent,
+        'approx_vertices': approx_vertices,
         'intensidade': intensidade_media,
         'preenchimento': preenchimento,
         'desvio_padrao': desvio_padrao,
@@ -842,8 +908,50 @@ def analisar_qualidade_marcacao(gray, contorno) -> dict:
         'contorno': contorno
     }
 
-MARCACAO_AREA_MIN = 35
+MARCACAO_AREA_MIN = 20
 MARCACAO_AREA_MAX = 3500
+
+
+def parece_quadrado_marcador(metricas: dict) -> bool:
+    """
+    Diferencia os quadrados de registro das bolhas preenchidas.
+    Um marcador e quase quadrado, compacto, muito escuro e com vertices retos.
+    """
+    return (
+        0.70 <= metricas.get('aspect_ratio', 0) <= 1.30
+        and metricas.get('extent', 0) >= 0.82
+        and 4 <= metricas.get('approx_vertices', 0) <= 6
+        and metricas.get('circularidade', 0) <= 0.88
+        and metricas.get('preenchimento', 0) >= 45
+        and metricas.get('intensidade', 255) <= 110
+    )
+
+
+def esta_em_zona_de_marcador(cx: int, cy: int, crop_width: int, crop_height: int) -> bool:
+    margem_x = max(28, int(crop_width * 0.055))
+    margem_y = max(42, int(crop_height * 0.080))
+    perto_lateral = cx <= margem_x or cx >= crop_width - margem_x
+    perto_topo_ou_base = cy <= margem_y or cy >= crop_height - margem_y
+    return perto_lateral and perto_topo_ou_base
+
+
+def deve_ignorar_quadrado_marcador(metricas: dict, crop_width: int, crop_height: int) -> bool:
+    cx, cy = metricas.get('centro', (0, 0))
+    return parece_quadrado_marcador(metricas) and esta_em_zona_de_marcador(
+        int(cx),
+        int(cy),
+        crop_width,
+        crop_height,
+    )
+
+
+def margens_seguras_omr(crop_width: int, crop_height: int) -> Tuple[int, int]:
+    """
+    Margem dinamica para evitar sujeira de borda sem cortar bolhas reais.
+    """
+    margem_x = max(20, int(crop_width * 0.025))
+    margem_y = max(20, int(crop_height * 0.025))
+    return margem_x, margem_y
 
 
 def eh_marcacao_valida(metricas: dict, debug: bool = False) -> tuple: #Nessa área a gente coloca como universal a validação da área, circularidade, aspect raiot, intensidade, preenchimento e uniformidade das bolhas. Caso queira que o bot pegue mais ou menos bolhas, o ajuste tem que ser feito por aqui
@@ -858,15 +966,15 @@ def eh_marcacao_valida(metricas: dict, debug: bool = False) -> tuple: #Nessa ár
         motivos_rejeicao.append(f"Área fora do padrão ({metricas['area']:.0f}px)") #Aqui regula o total de pixel junto que o bot vai determinar se é uma marcação ou não
     
     # 2️⃣ CIRCULARIDADE: > 0.12 (mais permissivo para círculos pintados à mão)
-    if metricas['circularidade'] < 0.12:
+    if metricas['circularidade'] < 0.19:
         motivos_rejeicao.append(f"Baixa circularidade ({metricas['circularidade']:.2f})") #Circularidade da bolha, quanto mais próximo de 1, mais circular é a bolha.
     
     # 3️⃣ ASPECT RATIO: Entre 0.20-1.6 (aceitar formas levemente alongadas)
-    if not (0.18 <= metricas['aspect_ratio'] <= 1.6):
+    if not (0.18 <= metricas['aspect_ratio'] <= 1.4):
         motivos_rejeicao.append(f"Forma não circular (ratio={metricas['aspect_ratio']:.2f})") #alongamento da bolha, quanto mais próximo de 1, mais circular é a bolha.
     
     # 4️⃣ INTENSIDADE: < 140 (mais permissivo para marcações com caneta)
-    if metricas['intensidade'] >= 140:
+    if metricas['intensidade'] >= 135:
         motivos_rejeicao.append(f"Intensidade alta ({metricas['intensidade']:.0f})") #Determina quão escura tem que ser a marcação, quanto menor o valor, mais escura é a marcação.
     
     # 5️⃣ PREENCHIMENTO: > 12% (mais permissivo para círculos pintados)
@@ -874,7 +982,7 @@ def eh_marcacao_valida(metricas: dict, debug: bool = False) -> tuple: #Nessa ár
         motivos_rejeicao.append(f"Preenchimento baixo ({metricas['preenchimento']:.1f}%)") #Percentual de preenchimento real da bolha, quanto maior o valor, mais preenchida está a bolha. Valores menores podem dar falsos positivos
     
     # 6️⃣ UNIFORMIDADE: Desvio padrão < 65 (mais permissivo para marcação manual)
-    if metricas['desvio_padrao'] > 65:
+    if metricas['desvio_padrao'] > 60:
         motivos_rejeicao.append(f"Marcação irregular (dp={metricas['desvio_padrao']:.1f})") #Desvio padrão da intensidade dos pixels, quanto menor, mais uniforme é a marcação.
     
     eh_valida = len(motivos_rejeicao) == 0
@@ -882,15 +990,52 @@ def eh_marcacao_valida(metricas: dict, debug: bool = False) -> tuple: #Nessa ár
     
     return eh_valida, motivo
 
+
+def _posicao_relativa_coluna_44(cx: int, crop_width: int) -> Tuple[int, float]:
+
+    largura_coluna = max(1.0, crop_width / 4.0)
+    coluna = int(min(3, max(0, cx // largura_coluna)))
+    inicio_coluna = coluna * largura_coluna
+    relativa = (float(cx) - inicio_coluna) / largura_coluna
+    return coluna, relativa
+
+
+def eh_marcacao_valida_44(metricas: dict, crop_width: int, crop_height: int, debug: bool = False) -> tuple:
+
+    eh_valida, motivo = eh_marcacao_valida(metricas, debug)
+    if not eh_valida:
+        return False, motivo
+
+    cx, _ = metricas.get('centro', (0, 0))
+    _, relativa_coluna = _posicao_relativa_coluna_44(int(cx), crop_width)
+    if not (0.22 <= relativa_coluna <= 0.96):
+        return False, f"Fora da faixa A-D (rel={relativa_coluna:.2f})"
+
+    x, y, w, h = metricas.get('bbox', (0, 0, 0, 0))
+    menor_lado = min(w, h)
+    maior_lado = max(w, h)
+    lado_minimo = max(5, int(round(crop_height * 0.018)))
+    lado_maximo = max(lado_minimo + 3, int(round(crop_height * 0.095)))
+
+    if menor_lado < lado_minimo:
+        return False, f"Marcação pequena demais ({w}x{h}px)"
+
+    if maior_lado > lado_maximo:
+        return False, f"Marcação grande demais ({w}x{h}px)"
+
+    if metricas.get('extent', 0) < 0.34:
+        return False, f"Contorno pouco compacto ({metricas.get('extent', 0):.2f})"
+
+    if metricas.get('circularidade', 0) < 0.18:
+        return False, f"Pouco circular para bolha ({metricas.get('circularidade', 0):.2f})"
+
+    if metricas.get('preenchimento', 0) < 31:
+        return False, f"Preenchimento baixo para 44q ({metricas.get('preenchimento', 0):.1f}%)"
+
+    return True, "OK"
+
 def salvar_debug_deteccao(image_path: str, bolhas_pintadas: list, crop: np.ndarray) -> None:
-    """
-    Salva imagem de debug com as bolhas detectadas marcadas em verde.
-    
-    Args:
-        image_path: Caminho da imagem original
-        bolhas_pintadas: Lista de tuplas (cx, cy, contorno, intensidade, area, circularidade, preenchimento)
-        crop: Array numpy com a região recortada da imagem
-    """
+
     debug_img = crop.copy()
     
     for cx, cy, cnt, intensidade, area, circ, preenchimento in bolhas_pintadas:
@@ -901,22 +1046,467 @@ def salvar_debug_deteccao(image_path: str, bolhas_pintadas: list, crop: np.ndarr
     debug_filename = f"debug_{os.path.basename(filename)}.png"
     cv2.imwrite(debug_filename, debug_img)
 
+
+def _distancia_pontos(ponto_a: Tuple[float, float], ponto_b: Tuple[float, float]) -> float:
+    return float(np.linalg.norm(np.asarray(ponto_a, dtype=np.float32) - np.asarray(ponto_b, dtype=np.float32)))
+
+
+def _registrar_candidato_marcador(candidatos: List[Dict[str, object]], candidato: Dict[str, object]) -> None:
+    """
+    Evita duplicar o mesmo quadrado quando ele aparece em thresholds diferentes.
+    """
+    centro = candidato["centro"]
+    lado = float(candidato["lado"])
+
+    for idx, existente in enumerate(candidatos):
+        distancia = _distancia_pontos(centro, existente["centro"])
+        lado_ref = max(lado, float(existente["lado"]))
+        if distancia <= max(6.0, lado_ref * 0.75):
+            if float(candidato["qualidade"]) > float(existente["qualidade"]):
+                candidatos[idx] = candidato
+            return
+
+    candidatos.append(candidato)
+
+
+def _detectar_candidatos_marcadores(gray: np.ndarray) -> List[Dict[str, object]]:
+
+    height, width = gray.shape[:2]
+    min_dim = max(1, min(height, width))
+    min_side = max(4, int(min_dim * 0.003))
+    max_side = max(min_side + 4, int(min_dim * 0.050))
+
+    thresholds = []
+    for limiar in (50, 80, 110, 140):
+        _, binary = cv2.threshold(gray, limiar, 255, cv2.THRESH_BINARY_INV)
+        thresholds.append(binary)
+
+    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    thresholds.append(otsu)
+    thresholds.append(
+        cv2.adaptiveThreshold(
+            gray,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            31,
+            9,
+        )
+    )
+
+    candidatos: List[Dict[str, object]] = []
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+
+    for binary in thresholds:
+        imagens_binarias = [
+            binary,
+            cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1),
+        ]
+
+        for clean in imagens_binarias:
+            contornos, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            for contorno in contornos:
+                area = float(cv2.contourArea(contorno))
+                if area <= 0:
+                    continue
+
+                x, y, w, h = cv2.boundingRect(contorno)
+                if w <= 0 or h <= 0:
+                    continue
+
+                cx = x + (w / 2.0)
+                cy = y + (h / 2.0)
+
+                if cy < height * 0.52:
+                    continue
+
+                if not (cx <= width * 0.26 or cx >= width * 0.74):
+                    continue
+
+                lado = max(w, h)
+                if not (min_side <= lado <= max_side):
+                    continue
+
+                aspect_ratio = w / h
+                if not (0.60 <= aspect_ratio <= 1.45):
+                    continue
+
+                extent = area / float(w * h)
+                if extent < 0.42:
+                    continue
+
+                perimetro = cv2.arcLength(contorno, True)
+                if perimetro <= 0:
+                    continue
+
+                circularidade = 4 * np.pi * area / (perimetro * perimetro)
+                if not (0.35 <= circularidade <= 0.95):
+                    continue
+
+                hull = cv2.convexHull(contorno)
+                hull_area = float(cv2.contourArea(hull))
+                solidez = area / hull_area if hull_area > 0 else 0.0
+                if solidez < 0.68:
+                    continue
+
+                approx = cv2.approxPolyDP(contorno, 0.035 * perimetro, True)
+                if not (4 <= len(approx) <= 7):
+                    continue
+
+                qualidade = (
+                    extent
+                    + solidez
+                    + max(0.0, 1.0 - abs(1.0 - aspect_ratio))
+                    + max(0.0, 0.90 - circularidade)
+                )
+
+                _registrar_candidato_marcador(
+                    candidatos,
+                    {
+                        "centro": (float(cx), float(cy)),
+                        "bbox": (int(x), int(y), int(w), int(h)),
+                        "lado": float(lado),
+                        "area": area,
+                        "qualidade": float(qualidade),
+                        "contorno": contorno,
+                    },
+                )
+
+    return candidatos
+
+
+def detectar_marcadores_area_respostas(img_cv: np.ndarray) -> Optional[Dict[str, object]]:
+    """
+    Localiza os quatro quadrados pretos que delimitam a area de respostas.
+
+    Retorna None quando a folha ainda nao tem marcadores confiaveis, permitindo
+    usar o crop proporcional antigo como fallback operacional.
+    """
+    if img_cv is None:
+        return None
+
+    height, width = img_cv.shape[:2]
+    if height < 120 or width < 120:
+        return None
+
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+    candidatos = _detectar_candidatos_marcadores(gray)
+    if len(candidatos) < 4:
+        return None
+
+    esquerda = [c for c in candidatos if c["centro"][0] <= width * 0.30]
+    direita = [c for c in candidatos if c["centro"][0] >= width * 0.70]
+    if len(esquerda) < 2 or len(direita) < 2:
+        return None
+
+    melhor: Optional[Dict[str, object]] = None
+    melhor_score = float("inf")
+
+    for top_left in esquerda:
+        for bottom_left in esquerda:
+            if top_left is bottom_left:
+                continue
+
+            tl_x, tl_y = top_left["centro"]
+            bl_x, bl_y = bottom_left["centro"]
+            if bl_y <= tl_y:
+                continue
+
+            altura_esq = bl_y - tl_y
+            if altura_esq < height * 0.18:
+                continue
+
+            if tl_y > height * 0.78 or bl_y < height * 0.68:
+                continue
+
+            if abs(tl_x - bl_x) > width * 0.08:
+                continue
+
+            for top_right in direita:
+                for bottom_right in direita:
+                    if top_right is bottom_right:
+                        continue
+
+                    tr_x, tr_y = top_right["centro"]
+                    br_x, br_y = bottom_right["centro"]
+                    if br_y <= tr_y:
+                        continue
+
+                    altura_dir = br_y - tr_y
+                    if altura_dir < height * 0.18:
+                        continue
+
+                    if tr_y > height * 0.78 or br_y < height * 0.68:
+                        continue
+
+                    if abs(tr_x - br_x) > width * 0.08:
+                        continue
+
+                    top_delta = abs(tl_y - tr_y)
+                    bottom_delta = abs(bl_y - br_y)
+                    if top_delta > height * 0.08 or bottom_delta > height * 0.08:
+                        continue
+
+                    largura_top = _distancia_pontos(top_left["centro"], top_right["centro"])
+                    largura_bottom = _distancia_pontos(bottom_left["centro"], bottom_right["centro"])
+                    if largura_top < width * 0.55 or largura_bottom < width * 0.55:
+                        continue
+
+                    media_topo = (tl_y + tr_y) / 2.0
+                    media_base = (bl_y + br_y) / 2.0
+                    if media_base - media_topo < height * 0.18:
+                        continue
+
+                    margem_lateral = (tl_x + bl_x + (width - tr_x) + (width - br_x)) / width
+                    alinhamento = (
+                        (top_delta + bottom_delta) / height
+                        + (abs(tl_x - bl_x) + abs(tr_x - br_x)) / width
+                    )
+                    qualidade = sum(
+                        float(m["qualidade"])
+                        for m in (top_left, top_right, bottom_right, bottom_left)
+                    )
+                    score = (margem_lateral * 2.0) + (alinhamento * 4.0) - (qualidade * 0.05)
+
+                    if score < melhor_score:
+                        melhor_score = score
+                        melhor = {
+                            "top_left": top_left,
+                            "top_right": top_right,
+                            "bottom_right": bottom_right,
+                            "bottom_left": bottom_left,
+                            "score": float(score),
+                            "candidatos": candidatos,
+                        }
+
+    return melhor
+
+
+def _salvar_debug_marcadores_respostas(
+    image_path: str,
+    img_cv: np.ndarray,
+    info_marcadores: Dict[str, object],
+    crop: np.ndarray,
+) -> None:
+    if not image_path:
+        return
+
+    debug_img = img_cv.copy()
+    pontos = np.array(
+        [
+            info_marcadores["top_left"]["centro"],
+            info_marcadores["top_right"]["centro"],
+            info_marcadores["bottom_right"]["centro"],
+            info_marcadores["bottom_left"]["centro"],
+        ],
+        dtype=np.int32,
+    )
+
+    cv2.polylines(debug_img, [pontos], True, (0, 180, 0), 3)
+
+    for nome, cor in (
+        ("top_left", (0, 255, 0)),
+        ("top_right", (0, 255, 0)),
+        ("bottom_right", (0, 255, 0)),
+        ("bottom_left", (0, 255, 0)),
+    ):
+        x, y, w, h = info_marcadores[nome]["bbox"]
+        cx, cy = info_marcadores[nome]["centro"]
+        cv2.rectangle(debug_img, (x, y), (x + w, y + h), cor, 2)
+        cv2.circle(debug_img, (int(cx), int(cy)), 4, (255, 0, 0), -1)
+        cv2.putText(
+            debug_img,
+            nome,
+            (x, max(15, y - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            cor,
+            1,
+            cv2.LINE_AA,
+        )
+
+    nome_base = os.path.splitext(image_path)[0]
+    cv2.imwrite(f"{nome_base}_debug_marcadores_respostas.png", debug_img)
+    cv2.imwrite(f"{nome_base}_debug_roi_respostas.png", crop)
+
+
+def _extrair_crop_respostas_por_marcadores(
+    img_cv: np.ndarray,
+    image_path: str = "",
+    debug: bool = False,
+) -> Tuple[Optional[np.ndarray], Optional[Dict[str, object]]]:
+    info = detectar_marcadores_area_respostas(img_cv)
+    if not info:
+        return None, None
+
+    pontos_origem = np.array(
+        [
+            info["top_left"]["centro"],
+            info["top_right"]["centro"],
+            info["bottom_right"]["centro"],
+            info["bottom_left"]["centro"],
+        ],
+        dtype=np.float32,
+    )
+
+    largura_topo = _distancia_pontos(info["top_left"]["centro"], info["top_right"]["centro"])
+    largura_base = _distancia_pontos(info["bottom_left"]["centro"], info["bottom_right"]["centro"])
+    altura_esq = _distancia_pontos(info["top_left"]["centro"], info["bottom_left"]["centro"])
+    altura_dir = _distancia_pontos(info["top_right"]["centro"], info["bottom_right"]["centro"])
+
+    largura_warp = max(1, int(max(largura_topo, largura_base)))
+    altura_warp = max(1, int(max(altura_esq, altura_dir)))
+    if largura_warp < 120 or altura_warp < 120:
+        return None, None
+
+    pontos_destino = np.array(
+        [
+            [0, 0],
+            [largura_warp - 1, 0],
+            [largura_warp - 1, altura_warp - 1],
+            [0, altura_warp - 1],
+        ],
+        dtype=np.float32,
+    )
+
+    matriz = cv2.getPerspectiveTransform(pontos_origem, pontos_destino)
+    warp = cv2.warpPerspective(
+        img_cv,
+        matriz,
+        (largura_warp, altura_warp),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(255, 255, 255),
+    )
+
+    lado_marcador = float(
+        np.median(
+            [
+                info["top_left"]["lado"],
+                info["top_right"]["lado"],
+                info["bottom_right"]["lado"],
+                info["bottom_left"]["lado"],
+            ]
+        )
+    )
+
+    pad_x = max(2, int(round(lado_marcador * 0.75)))
+    pad_top = max(8, int(round(lado_marcador * 2.20)))
+    pad_bottom = max(2, int(round(lado_marcador * 0.75)))
+
+    x1 = min(max(0, pad_x), largura_warp - 1)
+    x2 = max(x1 + 1, largura_warp - pad_x)
+    y1 = min(max(0, pad_top), altura_warp - 1)
+    y2 = max(y1 + 1, altura_warp - pad_bottom)
+
+    crop = warp[y1:y2, x1:x2].copy()
+    if crop.shape[0] < 80 or crop.shape[1] < 120:
+        return None, None
+
+    info["warp_size"] = (largura_warp, altura_warp)
+    info["crop_box_warp"] = (x1, y1, x2, y2)
+    info["lado_marcador"] = lado_marcador
+
+    if debug:
+        _salvar_debug_marcadores_respostas(image_path, img_cv, info, crop)
+
+    return crop, info
+
+
+def _recortar_por_proporcao(
+    img_cv: np.ndarray,
+    y_inicio: float,
+    y_fim: float,
+    x_inicio: float = 0.02,
+    x_fim: float = 0.98,
+    expandir_direita_px: int = 0,
+) -> np.ndarray:
+    height, width = img_cv.shape[:2]
+    y1 = max(0, min(height - 1, int(height * y_inicio)))
+    y2 = max(y1 + 1, min(height, int(height * y_fim)))
+    x1 = max(0, min(width - 1, int(width * x_inicio)))
+    x2 = max(x1 + 1, min(width, int(width * x_fim) + max(0, int(expandir_direita_px))))
+    return img_cv[y1:y2, x1:x2].copy()
+
+
+def _crop_respostas_fixo(
+    img_cv: np.ndarray,
+    num_questoes: Optional[int] = None,
+    eh_gabarito: bool = False,
+    origem_pdf: bool = False,
+) -> np.ndarray:
+    if origem_pdf:
+        return _recortar_por_proporcao(img_cv, 0.55, 0.92)
+
+    if num_questoes == 44:
+        if eh_gabarito:
+            return _recortar_por_proporcao(img_cv, 0.59, 0.93)
+        return _recortar_por_proporcao(img_cv, 0.58, 0.96)
+
+    if num_questoes == 52:
+        if eh_gabarito:
+            return _recortar_por_proporcao(img_cv, 0.60, 0.98, expandir_direita_px=1)
+        return _recortar_por_proporcao(img_cv, 0.59, 1.01, expandir_direita_px=10)
+
+    return _recortar_por_proporcao(img_cv, 0.60, 0.94)
+
+
+def obter_crop_area_respostas(
+    image_path: str,
+    img_cv: np.ndarray,
+    num_questoes: Optional[int] = None,
+    debug: bool = False,
+    eh_gabarito: bool = False,
+    origem_pdf: bool = False,
+) -> Tuple[np.ndarray, Dict[str, object]]:
+    forcar_crop_legado = _deve_forcar_crop_legado_sem_quadrados(image_path)
+
+    crop_marcadores = None
+    info_marcadores = None
+    if not forcar_crop_legado:
+        crop_marcadores, info_marcadores = _extrair_crop_respostas_por_marcadores(
+            img_cv,
+            image_path=image_path,
+            debug=debug,
+        )
+
+    if crop_marcadores is not None and info_marcadores is not None:
+        if debug or eh_gabarito:
+            largura_warp, altura_warp = info_marcadores.get("warp_size", (0, 0))
+            print(
+                "   📍 ROI por marcadores:",
+                f"warp={largura_warp}x{altura_warp}",
+                f"| crop={crop_marcadores.shape[1]}x{crop_marcadores.shape[0]}",
+            )
+        return crop_marcadores, {
+            "metodo": "marcadores",
+            "marcadores": info_marcadores,
+        }
+
+    if forcar_crop_legado and (debug or eh_gabarito):
+        print("   📐 Cartão sem quadrados de alinhamento; usando crop proporcional legado.")
+
+    crop_fixo = _crop_respostas_fixo(
+        img_cv,
+        num_questoes=num_questoes,
+        eh_gabarito=eh_gabarito,
+        origem_pdf=origem_pdf,
+    )
+    if debug or eh_gabarito:
+        print(
+            "   ⚠️ Marcadores da área de respostas não encontrados; "
+            "usando crop proporcional legado."
+        )
+
+    return crop_fixo, {
+        "metodo": "crop_fixo_fallback",
+        "marcadores": None,
+    }
+
+
 def detectar_respostas_pdf(image_path: str, debug: bool = False) -> list:
-    """
-    Detecta as respostas marcadas no cartão resposta convertido de PDF.
-    Otimizado para imagens de alta resolução com parâmetros específicos para PDFs.
-    
-    Args:
-        image_path: Caminho da imagem do PDF convertido
-        debug: Se deve exibir informações de debug
-    
-    Returns:
-        Lista com as respostas detectadas (44 ou 52 questões dependendo do cartão)
-    VERSÃO UNIVERSAL: Detecta automaticamente se é 44 ou 52 questões.
-    Retorna uma lista com as respostas ['A', 'B', 'C', 'D', '?'] onde '?' significa não detectado.
-    """
-    
-    # CARREGAR E PREPROCESSAR IMAGEM
+
     image = cv2.imread(image_path)
     if image is None:
         print(f"Erro: Não foi possível carregar a imagem {image_path}")
@@ -925,13 +1515,17 @@ def detectar_respostas_pdf(image_path: str, debug: bool = False) -> list:
     # Verificar se é uma imagem de alta resolução (provavelmente de PDF)
     height, width = image.shape[:2]
     is_high_res = width > 3000 or height > 2000
-    
+
     print(f"📐 Imagem PDF detectada: {width}x{height} pixels")
-    
-    # CROP ESPECÍFICO para alta resolução - área das questões
-    # Para PDFs, usar proporções similares mas ajustadas
-    crop = image[int(height*0.55):int(height*0.92), int(width*0.02):int(width*0.98)]
-    
+
+    crop, crop_info = obter_crop_area_respostas(
+        image_path,
+        image,
+        num_questoes=None,
+        debug=debug,
+        origem_pdf=True,
+    )
+
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     
     # Parâmetros otimizados para PDF de alta resolução
@@ -968,12 +1562,15 @@ def detectar_respostas_pdf(image_path: str, debug: bool = False) -> list:
     
     # Encontrar contornos
     contornos, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
+
     bolhas_pintadas = []
-    
+    marcadores_ignorados = 0
+    crop_height, crop_width = crop.shape[:2]
+    margem_x, margem_y = margens_seguras_omr(crop_width, crop_height)
+
     for cnt in contornos:
         area = cv2.contourArea(cnt)
-        
+
         if area_min < area < area_max:
             # Verificar circularidade
             perimeter = cv2.arcLength(cnt, True)
@@ -991,13 +1588,14 @@ def detectar_respostas_pdf(image_path: str, debug: bool = False) -> list:
                         if M["m00"] != 0:
                             cx = int(M["m10"] / M["m00"])
                             cy = int(M["m01"] / M["m00"])
-                            
+                            metricas = analisar_qualidade_marcacao(gray, cnt)
+                            if deve_ignorar_quadrado_marcador(metricas, crop_width, crop_height):
+                                marcadores_ignorados += 1
+                                continue
+
                             # Verificar se está na região válida
-                            crop_height, crop_width = crop.shape[:2]
-                            margem_segura = max(30, min(crop_width, crop_height) // 40)
-                            
-                            if (margem_segura < cx < crop_width - margem_segura and 
-                                margem_segura < cy < crop_height - margem_segura):
+                            if (margem_x < cx < crop_width - margem_x and
+                                margem_y < cy < crop_height - margem_y):
                                 
                                 # Calcular intensidade e preenchimento
                                 mask = np.zeros(gray.shape, dtype=np.uint8)
@@ -1042,8 +1640,10 @@ def detectar_respostas_pdf(image_path: str, debug: bool = False) -> list:
     if debug:
         print(f"=== DEBUG PDF - ALTA RESOLUÇÃO ===")
         print(f"Área do crop: {crop.shape[1]}x{crop.shape[0]} pixels")
+        print(f"Método do crop: {crop_info.get('metodo')}")
         print(f"Parâmetros usados - Área: {area_min}-{area_max}, Circ: {circularity_min:.2f}, Int: {intensity_max}")
         print(f"Bolhas detectadas: {num_bolhas}, Questões estimadas: {num_questoes}")
+        print(f"Quadrados de marcador ignorados: {marcadores_ignorados}")
 
     # Verificar se temos bolhas suficientes
     if len(bolhas_pintadas) < 6:  # Mínimo mais baixo para PDFs
@@ -1122,7 +1722,7 @@ def detectar_respostas_pdf(image_path: str, debug: bool = False) -> list:
                     
                     respostas[questao - 1] = resposta
                     if debug:
-                        continue
+                        print(f"   PDF Q{questao:02d}: {resposta} (x={cx}, y={cy})")
                     questao += 1
         
         return respostas
@@ -1146,20 +1746,18 @@ def detectar_respostas_52_questoes(image_path: str, debug: bool = False, eh_gaba
         Lista com 52 respostas detectadas (A/B/C/D ou '?' para não detectadas)
     """
     img_cv = cv2.imread(image_path)
-    height, width = img_cv.shape[:2]
-    
-    # CROPS ESPECÍFICOS PARA CARTÕES DE 52 QUESTÕES
-    if eh_gabarito:
-        # GABARITO: Crop mais centralizado (impressão limpa e consistente)
-        # Altura: 60% a 94% (mais restrito, gabaritos têm layout preciso)
-        # Largura: 4% a 96% (margens maiores, área bem definida)
-        crop = img_cv[int(height*0.60):int(height*0.98), int(width*0.02):int(width*0.98)]
-    else:
-        # ALUNOS: Crop mais amplo (marcações manuais podem variar)
-        # Altura: 58% a 96% (mais tolerante para capturar marcações em diferentes posições)
-        # Largura: 2% a 98% (margens mínimas para não perder marcações nas bordas)
-        crop = img_cv[int(height*0.59):int(height*0.98), int(width*0.02):int(width*0.98)]
-    
+    if img_cv is None:
+        print(f"❌ Erro ao carregar imagem: {image_path}")
+        return ['?'] * 52
+
+    crop, crop_info = obter_crop_area_respostas(
+        image_path,
+        img_cv,
+        num_questoes=52,
+        debug=debug,
+        eh_gabarito=eh_gabarito,
+    )
+
     # Converter para escala de cinza
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     
@@ -1181,15 +1779,22 @@ def detectar_respostas_52_questoes(image_path: str, debug: bool = False, eh_gaba
     bolhas_pintadas = []
     total_bolhas_validas = 0
     total_bolhas_rejeitadas = 0
-    
+
     crop_height, crop_width = gray.shape
-    
+    margem_x, margem_y = margens_seguras_omr(crop_width, crop_height)
+    marcadores_ignorados = 0
+
     for contour in contornos:
         metricas = analisar_qualidade_marcacao(gray, contour)
         cx, cy = metricas['centro']
-        
+
+        if deve_ignorar_quadrado_marcador(metricas, crop_width, crop_height):
+            marcadores_ignorados += 1
+            total_bolhas_rejeitadas += 1
+            continue
+
         # Verificar se está na região das questões
-        if not (20 < cx < crop_width - 20 and 20 < cy < crop_height - 20):
+        if not (margem_x < cx < crop_width - margem_x and margem_y < cy < crop_height - margem_y):
             continue
         
         # Validação rigorosa
@@ -1205,7 +1810,9 @@ def detectar_respostas_52_questoes(image_path: str, debug: bool = False, eh_gaba
     
     if debug or eh_gabarito:
         print(f"\n📊 Análise de Bolhas (52 questões):")
+        print(f"   📐 Crop: {crop.shape[1]}x{crop.shape[0]} ({crop_info.get('metodo')})")
         print(f"   ✅ Válidas: {total_bolhas_validas}")
+        print(f"   ⏹️ Marcadores ignorados: {marcadores_ignorados}")
         if total_bolhas_validas + total_bolhas_rejeitadas > 0:
             print(f"   📈 Taxa de aceitação: {total_bolhas_validas/(total_bolhas_validas+total_bolhas_rejeitadas)*100:.1f}%\n")
     
@@ -1470,16 +2077,18 @@ def detectar_respostas_44_questoes(image_path: str, debug: bool = False, eh_gaba
         Lista com 44 respostas detectadas (A/B/C/D ou '?' para não detectadas)
     """
     img_cv = cv2.imread(image_path)
-    height, width = img_cv.shape[:2]
-    
-    # CROPS ESPECÍFICOS PARA CARTÕES DE 44 QUESTÕES
-    if eh_gabarito:
-        # GABARITO: Crop mais centralizado (impressão limpa e consistente)
-        crop = img_cv[int(height*0.59):int(height*0.93), int(width*0.02):int(width*0.98)]
-    else:
-        # ALUNOS: Crop mais amplo (marcações manuais podem variar)
-        crop = img_cv[int(height*0.58):int(height*0.96), int(width*0.02):int(width*0.98)]
-    
+    if img_cv is None:
+        print(f"❌ Erro ao carregar imagem: {image_path}")
+        return ['?'] * 44
+
+    crop, crop_info = obter_crop_area_respostas(
+        image_path,
+        img_cv,
+        num_questoes=44,
+        debug=debug,
+        eh_gabarito=eh_gabarito,
+    )
+
     # Converter para escala de cinza
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     
@@ -1501,19 +2110,26 @@ def detectar_respostas_44_questoes(image_path: str, debug: bool = False, eh_gaba
     bolhas_pintadas = []
     total_bolhas_validas = 0
     total_bolhas_rejeitadas = 0
-    
+
     crop_height, crop_width = gray.shape
-    
+    margem_x, margem_y = margens_seguras_omr(crop_width, crop_height)
+    marcadores_ignorados = 0
+
     for contour in contornos:
         metricas = analisar_qualidade_marcacao(gray, contour)
         cx, cy = metricas['centro']
-        
+
+        if deve_ignorar_quadrado_marcador(metricas, crop_width, crop_height):
+            marcadores_ignorados += 1
+            total_bolhas_rejeitadas += 1
+            continue
+
         # Verificar se está na região das questões
-        if not (20 < cx < crop_width - 20 and 20 < cy < crop_height - 20):
+        if not (margem_x < cx < crop_width - margem_x and margem_y < cy < crop_height - margem_y):
             continue
         
-        # Validação rigorosa
-        eh_valida, motivo = eh_marcacao_valida(metricas, debug)
+        # Validação rigorosa + filtro de faixa/tamanho específico do layout 44q
+        eh_valida, motivo = eh_marcacao_valida_44(metricas, crop_width, crop_height, debug)
         
         if not eh_valida:
             total_bolhas_rejeitadas += 1
@@ -1525,7 +2141,9 @@ def detectar_respostas_44_questoes(image_path: str, debug: bool = False, eh_gaba
     
     if debug or eh_gabarito:
         print(f"\n📊 Análise de Bolhas (44 questões):")
+        print(f"   📐 Crop: {crop.shape[1]}x{crop.shape[0]} ({crop_info.get('metodo')})")
         print(f"   ✅ Válidas: {total_bolhas_validas}")
+        print(f"   ⏹️ Marcadores ignorados: {marcadores_ignorados}")
         if total_bolhas_validas + total_bolhas_rejeitadas > 0:
             print(f"   📈 Taxa de aceitação: {total_bolhas_validas/(total_bolhas_validas+total_bolhas_rejeitadas)*100:.1f}%\n")
     
@@ -1685,7 +2303,7 @@ def detectar_respostas_44_questoes(image_path: str, debug: bool = False, eh_gaba
                 
                 # 🔍 DETECÇÃO DE DUPLA MARCAÇÃO
                 # Threshold: intensidade abaixo de 70 = marcada
-                threshold_marcada = 70
+                threshold_marcada = 75
                 bolhas_marcadas = [b for b in linha_mais_proxima if b[3] < threshold_marcada]
                 
                 letra = '?'
@@ -1782,9 +2400,13 @@ def detectar_respostas_universal(image_path: str, debug: bool = False) -> list:
     if img_cv is None:
         print(f"❌ Erro ao carregar imagem: {image_path}")
         return ['?'] * 52  # Retorna 52 por padrão em caso de erro
-    
-    height, width = img_cv.shape[:2]
-    crop = img_cv[int(height*0.60):int(height*0.94), int(width*0.02):int(width*0.98)]
+
+    crop, crop_info = obter_crop_area_respostas(
+        image_path,
+        img_cv,
+        num_questoes=None,
+        debug=debug,
+    )
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (3, 3), 0)
     _, thresh = cv2.threshold(blur, 30, 155, cv2.THRESH_BINARY_INV)
@@ -1794,10 +2416,17 @@ def detectar_respostas_universal(image_path: str, debug: bool = False) -> list:
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
     
     contornos, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
+
     # Contar bolhas válidas - PARÂMETROS MENOS RIGOROSOS
     num_bolhas = 0
+    crop_height, crop_width = gray.shape
+    marcadores_ignorados = 0
     for cnt in contornos:
+        metricas = analisar_qualidade_marcacao(gray, cnt)
+        if deve_ignorar_quadrado_marcador(metricas, crop_width, crop_height):
+            marcadores_ignorados += 1
+            continue
+
         area = cv2.contourArea(cnt)
         if MARCACAO_AREA_MIN < area < MARCACAO_AREA_MAX:
             perimeter = cv2.arcLength(cnt, True)
@@ -1812,6 +2441,8 @@ def detectar_respostas_universal(image_path: str, debug: bool = False) -> list:
     
     if debug:
         print(f"🔍 Detecção Universal: {num_bolhas} bolhas encontradas")
+        print(f"   📐 Crop: {crop.shape[1]}x{crop.shape[0]} ({crop_info.get('metodo')})")
+        print(f"   ⏹️ Marcadores ignorados: {marcadores_ignorados}")
     
     # Thresholds para decidir o tipo de cartão
     # Se tem entre 35-50 bolhas, provavelmente é cartão de 44 questões
@@ -3742,20 +4373,7 @@ def processar_apenas_gabarito(DRIVER_FOLDER_9ANO: str = None, debug_mode: bool =
 # ===========================================
 
 def processar_pasta_gabaritos(diretorio: str = "./gabaritos", usar_gemini: bool = True, debug_mode: bool = False, num_questoes: int = 52):
-    """
-    Processa todos os arquivos de uma pasta com cartões (gabarito + alunos)
-    - 1 gabarito (template) para comparar com múltiplos alunos
-    - Sem comparações desnecessárias de dados
-    
-    Args:
-        diretorio: Caminho da pasta contendo gabarito e cartões dos alunos
-        usar_gemini: Se deve usar Gemini para cabeçalho
-        debug_mode: Se deve mostrar debug detalhado
-        num_questoes: Tipo de cartão (44 ou 52 questões)
-        
-    Returns:
-        Lista de resultados de cada aluno processado
-    """
+
     
     print("🚀 SISTEMA DE CORREÇÃO - PASTA GABARITOS")
     print("=" * 60)
@@ -5280,6 +5898,11 @@ if __name__ == "__main__":
         help="Threshold para conversão P&B, 0-255 (padrão: 180, menor=mais preto)"
     )
     parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Ativa debug detalhado (logs e imagens de apoio)"
+    )
+    parser.add_argument(
         "--questoes",
         type=int,
         choices=[44, 52],
@@ -5310,7 +5933,7 @@ if __name__ == "__main__":
     # Configurações fixas para automação total
     usar_gemini = True
     enviar_para_sheets = True
-    debug_mode = True
+    debug_mode = args.debug
     mover_processados = True
     manter_temp = False
     
@@ -5622,8 +6245,8 @@ if __name__ == "__main__":
                                         status, done = downloader.next_chunk()
                                 
                                 # Processar
-                                gab44_img = preprocessar_arquivo(gab44_path, "gabarito_44", debug=False)
-                                respostas_44 = detectar_respostas_por_tipo(gab44_img, num_questoes=44, debug=False, eh_gabarito=True)
+                                gab44_img = preprocessar_arquivo(gab44_path, "gabarito_44", debug=debug_mode)
+                                respostas_44 = detectar_respostas_por_tipo(gab44_img, num_questoes=44, debug=debug_mode, eh_gabarito=True)
                                 gabaritos_dict[44] = respostas_44
                                 print(f"   ✓ 44 questões processadas: {sum(1 for r in respostas_44 if r != '?')}/44")
                             else:
@@ -5652,8 +6275,8 @@ if __name__ == "__main__":
                                         status, done = downloader.next_chunk()
                                 
                                 # Processar
-                                gab52_img = preprocessar_arquivo(gab52_path, "gabarito_52", debug=False)
-                                respostas_52 = detectar_respostas_por_tipo(gab52_img, num_questoes=52, debug=False, eh_gabarito=True)
+                                gab52_img = preprocessar_arquivo(gab52_path, "gabarito_52", debug=debug_mode)
+                                respostas_52 = detectar_respostas_por_tipo(gab52_img, num_questoes=52, debug=debug_mode, eh_gabarito=True)
                                 gabaritos_dict[52] = respostas_52
                                 print(f"   ✓ 52 questões processadas: {sum(1 for r in respostas_52 if r != '?')}/52")
                             else:
@@ -5755,7 +6378,7 @@ if __name__ == "__main__":
                                                 pagina_img_proc = preprocessar_arquivo(
                                                     pagina_img,
                                                     f"aluno_pdf_{pagina_idx}",
-                                                    debug=False
+                                                    debug=debug_mode
                                                 )
                                                 
                                                 # 🆕 USAR EXTRAÇÃO OTIMIZADA (1 chamada única ao Gemini)
@@ -5779,7 +6402,7 @@ if __name__ == "__main__":
                                                 if not num_questoes_pagina:
                                                     print(f"   ⚠️ Gemini falhou - usando OCR como fallback")
                                                     print(f"   💡 A pasta de destino será definida pela MAIORIA de ocorrências")
-                                                    num_questoes_pagina = detectar_ano_com_ocr_direto(pagina_img_proc, debug=False)
+                                                    num_questoes_pagina = detectar_ano_com_ocr_direto(pagina_img_proc, debug=debug_mode)
                                                     print(f"   📊 OCR (fallback) detectou: {num_questoes_pagina} questões")
                                                 
                                                 # Se dados do aluno não foram extraídos, usar OCR
@@ -5817,7 +6440,7 @@ if __name__ == "__main__":
                                                 respostas_aluno = detectar_respostas_por_tipo(
                                                     pagina_img_proc, 
                                                     num_questoes=num_questoes_pagina, 
-                                                    debug=False
+                                                    debug=debug_mode
                                                 )
                                                 
                                                 questoes_detectadas = sum(1 for r in respostas_aluno if r != '?')
@@ -5947,7 +6570,7 @@ if __name__ == "__main__":
                                             cartao_path = converter_para_preto_e_branco(cartao_path, threshold=threshold_pb, salvar=True)
                                         
                                         # Processar cartão
-                                        aluno_img = preprocessar_arquivo(cartao_path, f"aluno_{img_idx}", debug=False)
+                                        aluno_img = preprocessar_arquivo(cartao_path, f"aluno_{img_idx}", debug=debug_mode)
                                         
                                         # 🆕 USAR EXTRAÇÃO OTIMIZADA (1 chamada única ao Gemini)
                                         num_questoes_aluno = None
@@ -5970,7 +6593,7 @@ if __name__ == "__main__":
                                         if not num_questoes_aluno:
                                             print(f"   ⚠️ Gemini falhou - usando OCR como fallback")
                                             print(f"   💡 A pasta de destino será definida corretamente")
-                                            num_questoes_aluno = detectar_ano_com_ocr_direto(aluno_img, debug=False)
+                                            num_questoes_aluno = detectar_ano_com_ocr_direto(aluno_img, debug=debug_mode)
                                             print(f"   📊 OCR (fallback) detectou: {num_questoes_aluno} questões")
                                         
                                         # Se dados do aluno não foram extraídos, usar OCR
@@ -5996,7 +6619,7 @@ if __name__ == "__main__":
                                             print(f"   📁 Destino: Pasta 9° ano (52 questões)")
                                         
                                         # Detectar respostas (usando número detectado)
-                                        respostas_aluno = detectar_respostas_por_tipo(aluno_img, num_questoes=num_questoes_aluno, debug=False)
+                                        respostas_aluno = detectar_respostas_por_tipo(aluno_img, num_questoes=num_questoes_aluno, debug=debug_mode)
                                         questoes_detectadas = sum(1 for r in respostas_aluno if r != '?')
                                         
                                         # 🆕 COMPARAR COM O GABARITO CORRETO

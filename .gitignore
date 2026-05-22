@@ -1,7 +1,10 @@
 # Credenciais e arquivos sensíveis
 credenciais_google.json
-*.json
-!requirements.json
+credentials*.json
+*credentials*.json
+service-account*.json
+historico_monitoramento.json
+bot_state_runtime.json
 
 # Arquivos de debug e temporários
 debug_*.png
@@ -89,3 +92,4 @@ desktop.ini
 *.env
 .env.local
 .env.*.local
+/generated/prisma

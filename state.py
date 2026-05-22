@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 from datetime import datetime
+from typing import Optional
 
 
 STATE_FILE = os.getenv(
@@ -63,6 +64,16 @@ def _trim_logs(state: dict) -> None:
         state["logs"] = state["logs"][:50]
 
 
+def _normalize_progress(progress: Optional[int]) -> Optional[int]:
+    if progress is None:
+        return None
+
+    try:
+        return max(0, min(100, int(progress)))
+    except (TypeError, ValueError):
+        return 0
+
+
 bot_state = _read_state()
 _write_state(bot_state)
 
@@ -73,31 +84,51 @@ def get_state_snapshot() -> dict:
     return copy.deepcopy(bot_state)
 
 
-def update_status(status: str, file: str = None, progress: int = 0):
+def reset_session():
+    global bot_state
+    state = _default_state()
+    state["logs"].insert(0, {
+        "time": datetime.now().strftime("%H:%M:%S"),
+        "msg": "Sessao do bot iniciada"
+    })
+    bot_state = state
+    _write_state(state)
+
+
+def update_status(status: str, file: str = None, progress: Optional[int] = 0):
     global bot_state
     state = _read_state()
     state["status"] = status
     state["current_file"] = file
-    state["progress"] = progress
+    progress_normalized = _normalize_progress(progress)
+    if progress_normalized is not None:
+        state["progress"] = progress_normalized
+    bot_state = state
+    _write_state(state)
+
+
+def record_correction(filename: str, file: str = None, progress: Optional[int] = None):
+    global bot_state
+    state = _read_state()
+    state["status"] = "running"
+    state["current_file"] = file if file is not None else filename
+    progress_normalized = _normalize_progress(progress)
+    if progress_normalized is not None:
+        state["progress"] = progress_normalized
+    state["total_corrected"] = int(state.get("total_corrected") or 0) + 1
+    state["last_correction"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    state["logs"].insert(0, {
+        "time": datetime.now().strftime("%H:%M:%S"),
+        "msg": f"Correcao concluida: {filename}"
+    })
+    _trim_logs(state)
     bot_state = state
     _write_state(state)
 
 
 def finish_correction(filename: str):
-    global bot_state
-    state = _read_state()
-    state["status"] = "idle"
-    state["current_file"] = None
-    state["progress"] = 100
-    state["total_corrected"] += 1
-    state["last_correction"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    state["logs"].insert(0, {
-        "time": datetime.now().strftime("%H:%M:%S"),
-        "msg": f"✅ Correção concluída: {filename}"
-    })
-    _trim_logs(state)
-    bot_state = state
-    _write_state(state)
+    record_correction(filename=filename, file=None, progress=100)
+    update_status("idle", None, 100)
 
 
 def log(msg: str):

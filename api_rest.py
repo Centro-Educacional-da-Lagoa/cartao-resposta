@@ -3,10 +3,12 @@
 Rode localmente enquanto desenvolve, depois migre para Docker
 """
 
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, Response, jsonify, request, send_file, stream_with_context
 from flask_cors import CORS
+import json
 import os
 import tempfile
+import time
 from datetime import datetime
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
@@ -15,6 +17,7 @@ from google.oauth2 import service_account
 from script import (
     configurar_google_sheets,
 )
+from state import get_state_snapshot
 
 app = Flask(__name__)
 CORS(app)  # Permitir acesso do React
@@ -59,8 +62,44 @@ def home():
             "GET  /api/estatisticas_9ano",
             "GET  /api/estatisticas_5ano",
             "GET  /api/estadisticas_gerais",
+            "GET  /api/bot/state",
+            "GET  /api/bot/stream",
         ]
     })
+
+@app.route('/api/bot/state')
+def bot_state():
+    """Snapshot atual do worker de correcao."""
+    return jsonify(get_state_snapshot())
+
+
+@app.route('/api/bot/stream')
+def bot_stream():
+    """Stream SSE usado pelo painel para acompanhar o bot em tempo real."""
+
+    def gerar_eventos():
+        ultimo_payload = None
+
+        while True:
+            snapshot = get_state_snapshot()
+            payload = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+
+            if payload != ultimo_payload:
+                yield f"data: {payload}\n\n"
+                ultimo_payload = payload
+            else:
+                yield ": keepalive\n\n"
+
+            time.sleep(1)
+
+    return Response(
+        stream_with_context(gerar_eventos()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        },
+    )
 
 @app.route('/api/status')
 def status():
@@ -68,8 +107,8 @@ def status():
     try:
         client = configurar_google_sheets()
 
-        sheets_9ano = client.open_by_key(GOOGLE_SHEETS_9ANO)
-        sheets_5ano = client.open_by_key(GOOGLE_SHEETS_5ANO)
+        sheets_9ano = client.open_by_key(GOOGLE_SHEETS_9ANO).sheet1
+        sheets_5ano = client.open_by_key(GOOGLE_SHEETS_5ANO).sheet1
 
         dados9ano = sheets_9ano.get_all_records()
         dados5ano = sheets_5ano.get_all_records()
@@ -342,6 +381,8 @@ if __name__ == '__main__':
     print("   - http://localhost:5000/api/estatisticas/9ano")
     print("   - http://localhost:5000/api/estatisticas/5ano")
     print("   - http://localhost:5000/api/estatisticas/geral")
+    print("   - http://localhost:5000/api/bot/state")
+    print("   - http://localhost:5000/api/bot/stream")
     print("=" * 80)
     
     app.run(host='0.0.0.0', port=5000, debug=True)

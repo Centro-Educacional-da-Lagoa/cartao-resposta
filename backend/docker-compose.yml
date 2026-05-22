@@ -1,0 +1,27 @@
+services:
+  backend:
+    build: .
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      DATABASE_URL: "${DATABASE_URL:?Configure DATABASE_URL no .env do servidor}"
+      JWT_SECRET: "${JWT_SECRET:?Configure JWT_SECRET no .env do servidor}"
+      JWT_EXPIRES_IN_SECONDS: 604800
+      AUTH_COOKIE_SECURE: "${AUTH_COOKIE_SECURE:?Configure AUTH_COOKIE_SECURE no .env do servidor}"
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+    ports:
+      - "3001:3001"
+    restart: on-failure
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/api/status').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s

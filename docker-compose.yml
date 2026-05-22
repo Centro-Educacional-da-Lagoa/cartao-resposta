@@ -1,18 +1,79 @@
 services:
-  # Serviço 1: A sua API FastAPI
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_DATA_API_URL: ${VITE_DATA_API_URL:-http://localhost:3001}
+        VITE_BOT_API_URL: ${VITE_BOT_API_URL:-http://localhost:5000}
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
+    ports:
+      - "5173:8080"
+    depends_on:
+      api:
+        condition: service_started
+      backend:
+        condition: service_healthy
+
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      DATABASE_URL: "${DATABASE_URL:?Configure DATABASE_URL no .env do servidor}"
+      JWT_SECRET: "${JWT_SECRET:?Configure JWT_SECRET no .env do servidor}"
+      JWT_EXPIRES_IN_SECONDS: ${JWT_EXPIRES_IN_SECONDS:-604800}
+      AUTH_COOKIE_SECURE: "${AUTH_COOKIE_SECURE:?Configure AUTH_COOKIE_SECURE no .env do servidor}"
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+    ports:
+      - "3001:3001"
+    restart: on-failure
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/api/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
   api:
-    build: .
+    build:
+      context: .
+    image: cartao-resposta-python:latest
+    env_file:
+      - .env
+    environment:
+      BACKEND_BASE_URL: http://backend:3001
     command: python -u api_rest.py
     ports:
       - "5000:5000"
     volumes:
-      - .:/app
+      - .:/usr/src/app
+    depends_on:
+      backend:
+        condition: service_healthy
 
-  # Serviço 2: O seu script de monitoramento
   monitor:
-    build: .
+    image: cartao-resposta-python:latest
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      BACKEND_BASE_URL: http://backend:3001
     command: python -u script.py --monitor --intervalo 1
     volumes:
-      - .:/app
+      - .:/usr/src/app
     depends_on:
-      - api
+      api:
+        condition: service_started
+      backend:
+        condition: service_healthy

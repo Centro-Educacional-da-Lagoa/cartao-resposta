@@ -7,7 +7,7 @@
 - ✅ **Detecção automática** de gabaritos e folhas de resposta
 - 🤖 **Extração de cabeçalho** com Google Gemini AI
 - 📊 **Integração com Google Sheets** para armazenamento automático
-- 🗄️ **Integração com backend NestJS + PostgreSQL** para persistência oficial
+- 🗄️ **Integração com backend NestJS + Prisma + SQL Server** para persistência oficial
 - ☁️ **Sincronização com Google Drive** (download automático da pasta configurada)
 - 🎯 **Alta precisão** na detecção de respostas marcadas
 - 📁 **Processamento em lote** de múltiplos alunos
@@ -96,21 +96,34 @@ Adicione no `.env`:
 ```env
 BACKEND_SYNC_ENABLED=true
 BACKEND_BASE_URL=http://localhost:3001
-BACKEND_USER_EMAIL=admin@example.com
-BACKEND_USER_PASSWORD=Admin@1234
 BACKEND_SYNC_TIMEOUT_SECONDS=20
 ```
 
 Com isso, cada cartão processado também é enviado para:
 
-- `POST /api/v1/cartao-resposta/leituras`
+- `POST /api/aluno`
 
 Observações:
 
-- O usuário do backend precisa da permissão `CartoesResposta.create`.
-- O envio pode usar `turmaId/alunoId` (se disponíveis) ou `turmaNome/alunoNome` para resolução por matrícula.
+- No Docker Compose, `BACKEND_BASE_URL` é sobrescrito para `http://backend:3001`.
+- Se um backend com autenticação for usado, configure também `BACKEND_AUTH_ENABLED=true`, `BACKEND_AUTH_PATH`, `BACKEND_USER_EMAIL` e `BACKEND_USER_PASSWORD`.
+- O backend grava os dados na tabela `resultados_alunos` do SQL Server.
 
 OBS: A biblioteca do .env será instalada automaticamente após executar o requirements.txt
+
+### Autenticação do painel e Google Sign-In
+
+Adicione também as variáveis de autenticação ao `.env`:
+
+```env
+JWT_SECRET=gere-um-segredo-com-pelo-menos-32-caracteres
+JWT_EXPIRES_IN_SECONDS=604800
+AUTH_COOKIE_SECURE=false
+GOOGLE_OAUTH_CLIENT_ID=seu-client-id.apps.googleusercontent.com
+VITE_GOOGLE_CLIENT_ID=seu-client-id.apps.googleusercontent.com
+```
+
+O backend grava os usuarios na tabela `usuarios` com `id`, `nome`, `email`, `senha` e `created_at`. A senha é salva como hash `scrypt`; usuarios criados via Google ficam com `senha` vazia/nula e podem ser vinculados depois por email.
 
 
 
@@ -202,6 +215,33 @@ tesseract --version
 
 
 ## 🎮 Como Usar
+
+### Subir tudo com Docker Compose
+
+Com o `.env` configurado na raiz, use:
+
+```bash
+docker compose up --build
+```
+
+O Compose sobe os serviços:
+
+- Frontend React: http://localhost:5173
+- API Python do bot: http://localhost:5000
+- Backend NestJS: http://localhost:3001
+- SQL Server: localhost:1433
+
+O backend NestJS executa as migrations automaticamente ao iniciar. O frontend lê os dados do painel pelo NestJS/SQL Server em `http://localhost:3001` (`VITE_DATA_API_URL`) e reserva a API Python em `http://localhost:5000` (`VITE_BOT_API_URL`) para funções do bot.
+
+Para conectar pelo SQL Server Management Studio:
+
+- Server name: `localhost,1433`
+- Authentication: `SQL Server Authentication`
+- Login: `sa`
+- Password: `CartaoResposta@2026`, ou o valor de `MSSQL_SA_PASSWORD`
+- Database: `cartao_resposta`
+
+Se o container do SQL Server sair com `code 137`, o Docker/WSL matou o processo por memória. O Compose já limita o SQL Server com `MSSQL_MEMORY_LIMIT_MB=1024`; se ainda falhar, aumente a memória disponível do Docker/WSL ou use um SQL Server externo com `DB_HOST`, `DB_USERNAME` e `DB_PASSWORD`.
 
 ### Modo monitor para ler de forma contínua e automática os gabaritos e cartões-resposta dentro da pasta
 
@@ -355,4 +395,3 @@ echo $GEMINI_API_KEY
 - Verificar qualidade das imagens (mínimo 300 DPI)
 - Garantir boa iluminação e contraste
 - Evitar sombras ou reflexos
-

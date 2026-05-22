@@ -1,0 +1,41 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")
+}
+
+model ResultadoAluno {
+  id                      String   @id @db.VarChar(36)
+  data                    DateTime @db.Date
+  anoEscolar              String   @map("ano_escolar") @db.VarChar(4)
+  escola                  String   @db.VarChar(255)
+  nomeCompleto            String   @map("nome_completo") @db.VarChar(255)
+  dataNascimento          DateTime @map("data_nascimento") @db.Date
+  turma                   String   @db.VarChar(80)
+  acertosLinguaPortuguesa Int      @map("acertos_lingua_portuguesa")
+  acertosMatematica       Int      @map("acertos_matematica")
+  errosLinguaPortuguesa   Int      @map("erros_lingua_portuguesa")
+  errosMatematica         Int      @map("erros_matematica")
+  questoesAnuladas        Int      @default(0) @map("questoes_anuladas")
+  porcentagemAcertos      Decimal  @map("porcentagem_acertos") @db.Decimal(5, 2)
+  createdAt               DateTime @default(now(), map: "DF_1be38f2e9429237e22ef9d1e387") @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  @@map("resultados_alunos")
+}
+
+model Usuario {
+  id        String   @id @db.VarChar(36)
+  nome      String   @db.VarChar(160)
+  email     String   @unique @db.VarChar(255)
+  senhaHash String?  @map("senha") @db.VarChar(255)
+  googleId  String?  @map("google_id") @db.VarChar(255)
+  createdAt DateTime @default(now(), map: "DF_7003e73aa27b744ee2714d7fff4") @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("usuarios")
+}

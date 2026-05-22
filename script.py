@@ -45,6 +45,22 @@ try:
 except ImportError:
     create_backend_sync_client_from_env = None
 
+try:
+    from state import log as registrar_status_log
+    from state import record_correction, reset_session, update_status
+except ImportError:
+    def registrar_status_log(_msg: str):
+        return None
+
+    def record_correction(_filename: str, file: str = None, progress: int = None):
+        return None
+
+    def reset_session():
+        return None
+
+    def update_status(_status: str, file: str = None, progress: int = 0):
+        return None
+
 # Importação do processador de PDF
 try:
     from pdf_processor_simple import process_pdf_file, is_pdf_file, setup_pdf_support
@@ -134,6 +150,73 @@ def _resolver_nomes_fallback(dados_aluno: Dict[str, str], file_name: str) -> Dic
         "alunoNome": aluno_fallback,
     }
 
+def _texto_backend(valor, fallback: str, limite: int) -> str:
+    texto = str(valor or "").strip()
+    if not texto or texto.upper() in {"N/A", "NA", "NONE", "NULL", "-"}:
+        texto = fallback
+
+    return texto[:limite]
+
+def _data_backend(valor, fallback: str) -> str:
+    texto = str(valor or "").strip()
+    if not texto or texto.upper() in {"N/A", "NA", "NONE", "NULL", "-"}:
+        return fallback
+
+    match_iso = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", texto)
+    if match_iso:
+        ano, mes, dia = match_iso.groups()
+    else:
+        match_pt_br = re.search(r"(\d{1,2})\s*[/\-]\s*(\d{1,2})\s*[/\-]\s*(\d{2,4})", texto)
+        if not match_pt_br:
+            return fallback
+
+        dia, mes, ano = match_pt_br.groups()
+        if len(ano) == 2:
+            ano = f"20{ano}" if int(ano) < 50 else f"19{ano}"
+
+    try:
+        return datetime(int(ano), int(mes), int(dia)).date().isoformat()
+    except ValueError:
+        return fallback
+
+def _int_backend(valor, fallback: int = 0) -> int:
+    try:
+        return max(0, int(round(float(valor))))
+    except (TypeError, ValueError):
+        return fallback
+
+def _percentual_backend(valor) -> float:
+    try:
+        percentual = float(valor)
+    except (TypeError, ValueError):
+        percentual = 0.0
+
+    return round(min(100.0, max(0.0, percentual)), 2)
+
+def _payload_resultado_aluno_backend(
+    file_name: str,
+    dados_aluno: Dict[str, str],
+    respostas_aluno: List[str],
+    resultado: Dict,
+) -> Dict[str, object]:
+    nome_base = os.path.splitext(file_name.replace("#", "_"))[0]
+    fallback_nome = nome_base if nome_base else "ALUNO_NAO_IDENTIFICADO"
+
+    return {
+        "data": datetime.now().date().isoformat(),
+        "anoEscolar": "5ano" if len(respostas_aluno) == 44 else "9ano",
+        "escola": _texto_backend(dados_aluno.get("escola"), "N/A", 255),
+        "nomeCompleto": _texto_backend(dados_aluno.get("aluno"), fallback_nome, 255),
+        "dataNascimento": _data_backend(dados_aluno.get("nascimento"), "1900-01-01"),
+        "turma": _texto_backend(dados_aluno.get("turma"), "N/A", 80),
+        "acertosLinguaPortuguesa": _int_backend(resultado.get("acertos_portugues")),
+        "acertosMatematica": _int_backend(resultado.get("acertos_matematica")),
+        "errosLinguaPortuguesa": _int_backend(resultado.get("erros_portugues")),
+        "errosMatematica": _int_backend(resultado.get("erros_matematica")),
+        "questoesAnuladas": _int_backend(resultado.get("anuladas")),
+        "porcentagemAcertos": _percentual_backend(resultado.get("percentual")),
+    }
+
 def enviar_resultado_para_backend(
     backend_client,
     drive_file_id: str,
@@ -148,38 +231,15 @@ def enviar_resultado_para_backend(
     if not backend_client:
         return False
 
-    identificacao = _resolver_ids_ou_nomes(dados_aluno)
-    if not identificacao:
-        identificacao = _resolver_nomes_fallback(dados_aluno, file_name)
-        print(
-            "   ⚠️ Sync backend sem vínculo completo: enviando com turma/aluno fallback "
-            "para garantir registro no painel"
-        )
+    payload = _payload_resultado_aluno_backend(
+        file_name=file_name,
+        dados_aluno=dados_aluno,
+        respostas_aluno=respostas_aluno,
+        resultado=resultado,
+    )
 
-    payload = {
-        "driveFileId": drive_file_id,
-        "fileName": file_name,
-        "origem": origem,
-        "avaliacaoRef": f"{len(respostas_aluno)}_questoes",
-        "respostasMarcadas": normalizar_respostas_backend(respostas_aluno),
-        "gabarito": normalizar_respostas_backend(respostas_gabarito),
-        "metadata": {
-            "escola": dados_aluno.get("escola", "N/A"),
-            "aluno": dados_aluno.get("aluno", "N/A"),
-            "turma": dados_aluno.get("turma", "N/A"),
-            "nascimento": dados_aluno.get("nascimento", "N/A"),
-            "questoesDetectadas": questoes_detectadas,
-            "acertos": resultado.get("acertos"),
-            "erros": resultado.get("erros"),
-            "acertos_portugues": resultado.get("acertos_portugues"),
-            "acertos_matematica": resultado.get("acertos_matematica"),
-            "erros_portugues": resultado.get("erros_portugues"),
-            "erros_matematica": resultado.get("erros_matematica"),
-            "anuladas": resultado.get("anuladas"),
-            "percentual": resultado.get("percentual"),
-        },
-    }
-    payload.update(identificacao)
+    if payload["dataNascimento"] == "1900-01-01":
+        print("   ⚠️ Nascimento não identificado; usando 1900-01-01 no banco")
 
     try:
         backend_client.send_leitura(payload)
@@ -1176,6 +1236,53 @@ def _detectar_candidatos_marcadores(gray: np.ndarray) -> List[Dict[str, object]]
     return candidatos
 
 
+def _marcadores_area_confiaveis(
+    info: Dict[str, object],
+    height: int,
+    width: int,
+) -> bool:
+    if not info or height <= 0 or width <= 0:
+        return False
+
+    tl = info["top_left"]["centro"]
+    tr = info["top_right"]["centro"]
+    br = info["bottom_right"]["centro"]
+    bl = info["bottom_left"]["centro"]
+
+    altura_esq = abs(bl[1] - tl[1])
+    altura_dir = abs(br[1] - tr[1])
+    altura_media = (altura_esq + altura_dir) / 2.0
+
+    largura_topo = _distancia_pontos(tl, tr)
+    largura_base = _distancia_pontos(bl, br)
+    largura_media = (largura_topo + largura_base) / 2.0
+
+    altura_rel = altura_media / float(height)
+    largura_rel = largura_media / float(width)
+
+    if not (0.20 <= altura_rel <= 0.60):
+        return False
+
+    if not (0.58 <= largura_rel <= 0.99):
+        return False
+
+    lados = [
+        float(info["top_left"]["lado"]),
+        float(info["top_right"]["lado"]),
+        float(info["bottom_right"]["lado"]),
+        float(info["bottom_left"]["lado"]),
+    ]
+    min_lado = min(lados)
+    max_lado = max(lados)
+    if min_lado <= 0:
+        return False
+
+    if (max_lado / min_lado) > 1.8:
+        return False
+
+    return True
+
+
 def detectar_marcadores_area_respostas(img_cv: np.ndarray) -> Optional[Dict[str, object]]:
     """
     Localiza os quatro quadrados pretos que delimitam a area de respostas.
@@ -1279,6 +1386,9 @@ def detectar_marcadores_area_respostas(img_cv: np.ndarray) -> Optional[Dict[str,
                             "score": float(score),
                             "candidatos": candidatos,
                         }
+
+    if melhor and not _marcadores_area_confiaveis(melhor, height, width):
+        return None
 
     return melhor
 
@@ -1414,6 +1524,32 @@ def _extrair_crop_respostas_por_marcadores(
     return crop, info
 
 
+def _crop_marcadores_compativel(
+    img_cv: np.ndarray,
+    crop: np.ndarray,
+    debug: bool = False,
+    eh_gabarito: bool = False,
+) -> bool:
+    height, width = img_cv.shape[:2]
+    crop_height, crop_width = crop.shape[:2]
+
+    if height <= 0 or width <= 0:
+        return False
+
+    altura_rel = crop_height / float(height)
+    largura_rel = crop_width / float(width)
+
+    if not (0.22 <= altura_rel <= 0.62 and 0.60 <= largura_rel <= 0.99):
+        if debug or eh_gabarito:
+            print(
+                "   ⚠️ ROI por marcadores fora da faixa esperada; "
+                "usando crop proporcional legado."
+            )
+        return False
+
+    return True
+
+
 def _recortar_por_proporcao(
     img_cv: np.ndarray,
     y_inicio: float,
@@ -1470,6 +1606,16 @@ def obter_crop_area_respostas(
             image_path=image_path,
             debug=debug,
         )
+
+        if crop_marcadores is not None and info_marcadores is not None:
+            if not _crop_marcadores_compativel(
+                img_cv,
+                crop_marcadores,
+                debug=debug,
+                eh_gabarito=eh_gabarito,
+            ):
+                crop_marcadores = None
+                info_marcadores = None
 
     if crop_marcadores is not None and info_marcadores is not None:
         if debug or eh_gabarito:
@@ -6038,6 +6184,7 @@ if __name__ == "__main__":
         print("✨ Sistema detectará automaticamente o ano de cada cartão")
         print("💡 Pressione Ctrl+C para parar")
         print("=" * 60)
+        reset_session()
         
         import time
         import json
@@ -6189,6 +6336,8 @@ if __name__ == "__main__":
                         
                         # Processar APENAS os novos cartões
                         print("🚀 Processando APENAS os novos cartões...")
+                        update_status("running", "Preparando processamento", 0)
+                        registrar_status_log(f"Iniciando processamento de {len(novos_cartoes)} cartao(s)")
                         try:
                             # Imports necessários
                             import tempfile
@@ -6303,6 +6452,9 @@ if __name__ == "__main__":
                                     pdfs_para_processar.append(cartao_info)
                                 elif nome.endswith(('.png', '.jpg', '.jpeg')):
                                     imagens_para_processar.append(cartao_info)
+
+                            total_status_items = len(pdfs_para_processar) + len(imagens_para_processar)
+                            itens_status_processados = 0
                             
                             print(f"\n📊 Arquivos detectados:")
                             print(f"   📄 PDFs: {len(pdfs_para_processar)}")
@@ -6321,6 +6473,11 @@ if __name__ == "__main__":
                                 for pdf_idx, pdf_info in enumerate(pdfs_para_processar, 1):
                                     try:
                                         print(f"\n📄 [{pdf_idx}/{len(pdfs_para_processar)}] {pdf_info['name']}")
+                                        update_status(
+                                            "running",
+                                            pdf_info['name'],
+                                            int((itens_status_processados / max(total_status_items, 1)) * 100)
+                                        )
                                         
                                         # Baixar PDF
                                         request = drive_service.files().get_media(fileId=pdf_info['id'])
@@ -6339,9 +6496,16 @@ if __name__ == "__main__":
                                         
                                         if not imagens_paginas:
                                             print(f"❌ Nenhuma página convertida do PDF")
+                                            itens_status_processados += 1
+                                            update_status(
+                                                "running",
+                                                pdf_info['name'],
+                                                int((itens_status_processados / max(total_status_items, 1)) * 100)
+                                            )
                                             continue
                                         
                                         print(f"✅ {len(imagens_paginas)} páginas convertidas!")
+                                        total_status_items += max(0, len(imagens_paginas) - 1)
                                         
                                         # Converter para P&B
                                         print(f"🎨 Convertendo para P&B...")
@@ -6371,8 +6535,14 @@ if __name__ == "__main__":
                                         print(f"{'─'*60}")
                                         
                                         for pagina_idx, pagina_img in enumerate(imagens_paginas, 1):
+                                            nome_pagina_status = f"{pdf_info['name']} - pagina {pagina_idx}/{len(imagens_paginas)}"
                                             try:
                                                 print(f"\n🔄 Página {pagina_idx}/{len(imagens_paginas)}")
+                                                update_status(
+                                                    "running",
+                                                    nome_pagina_status,
+                                                    int((itens_status_processados / max(total_status_items, 1)) * 100)
+                                                )
                                                 
                                                 # 🆕 Normalizar CADA página do PDF (perspectiva condicional + deskew)
                                                 pagina_img_proc = preprocessar_arquivo(
@@ -6434,6 +6604,12 @@ if __name__ == "__main__":
                                                 respostas_gabarito_correto = gabaritos_dict.get(num_questoes_pagina)
                                                 if not respostas_gabarito_correto:
                                                     print(f"   ❌ Gabarito de {num_questoes_pagina} questões não disponível!")
+                                                    itens_status_processados += 1
+                                                    update_status(
+                                                        "running",
+                                                        nome_pagina_status,
+                                                        int((itens_status_processados / max(total_status_items, 1)) * 100)
+                                                    )
                                                     continue
                                                 
                                                 # Detectar respostas (usando número detectado para esta página)
@@ -6448,6 +6624,12 @@ if __name__ == "__main__":
                                                 # Verificar detecção mínima
                                                 if questoes_detectadas < num_questoes_pagina * 0.5:
                                                     print(f"   ⚠️ Poucas questões detectadas ({questoes_detectadas}/{num_questoes_pagina}) - IGNORADO")
+                                                    itens_status_processados += 1
+                                                    update_status(
+                                                        "running",
+                                                        nome_pagina_status,
+                                                        int((itens_status_processados / max(total_status_items, 1)) * 100)
+                                                    )
                                                     continue
                                                 
                                                 # Comparar com gabarito correto
@@ -6497,9 +6679,21 @@ if __name__ == "__main__":
                                                     questoes_detectadas=questoes_detectadas,
                                                     origem="monitor_drive_pdf",
                                                 )
+                                                itens_status_processados += 1
+                                                record_correction(
+                                                    nome_pagina_status,
+                                                    file=nome_pagina_status,
+                                                    progress=int((itens_status_processados / max(total_status_items, 1)) * 100)
+                                                )
                                                 
                                             except Exception as e:
                                                 print(f"   ❌ Erro na página {pagina_idx}: {e}")
+                                                itens_status_processados += 1
+                                                update_status(
+                                                    "running",
+                                                    nome_pagina_status,
+                                                    int((itens_status_processados / max(total_status_items, 1)) * 100)
+                                                )
                                         
                                         # Limpar imagens temporárias do PDF
                                         
@@ -6541,6 +6735,12 @@ if __name__ == "__main__":
                                         
                                     except Exception as e:
                                         print(f"   ❌ Erro ao processar PDF: {e}")
+                                        itens_status_processados += 1
+                                        update_status(
+                                            "running",
+                                            pdf_info['name'],
+                                            int((itens_status_processados / max(total_status_items, 1)) * 100)
+                                        )
                                         import traceback
                                         traceback.print_exc()
                             
@@ -6553,8 +6753,14 @@ if __name__ == "__main__":
                                 print(f"{'='*80}")
                                 
                                 for img_idx, cartao_info in enumerate(imagens_para_processar, 1):
+                                    nome_imagem_status = cartao_info['name']
                                     try:
                                         print(f"\n🔄 [{img_idx}/{len(imagens_para_processar)}] {cartao_info['name']}")
+                                        update_status(
+                                            "running",
+                                            nome_imagem_status,
+                                            int((itens_status_processados / max(total_status_items, 1)) * 100)
+                                        )
                                         
                                         # Baixar imagem
                                         request = drive_service.files().get_media(fileId=cartao_info['id'])
@@ -6626,6 +6832,12 @@ if __name__ == "__main__":
                                         respostas_gabarito_correto = gabaritos_dict.get(num_questoes_aluno)
                                         if not respostas_gabarito_correto:
                                             print(f"   ❌ Gabarito de {num_questoes_aluno} questões não disponível!")
+                                            itens_status_processados += 1
+                                            update_status(
+                                                "running",
+                                                nome_imagem_status,
+                                                int((itens_status_processados / max(total_status_items, 1)) * 100)
+                                            )
                                             continue
                                         
                                         resultado = comparar_respostas(respostas_gabarito_correto, respostas_aluno)
@@ -6666,6 +6878,12 @@ if __name__ == "__main__":
                                             questoes_detectadas=questoes_detectadas,
                                             origem="monitor_drive_imagem",
                                         )
+                                        itens_status_processados += 1
+                                        record_correction(
+                                            nome_imagem_status,
+                                            file=nome_imagem_status,
+                                            progress=int((itens_status_processados / max(total_status_items, 1)) * 100)
+                                        )
                                         
                                         # Marcar como processado (ID + NOME + PASTA DESTINO)
                                         nome_sem_ext = os.path.splitext(cartao_info['name'])[0].lower()
@@ -6679,6 +6897,12 @@ if __name__ == "__main__":
                                         
                                     except Exception as e:
                                         print(f"   ❌ Erro: {e}")
+                                        itens_status_processados += 1
+                                        update_status(
+                                            "running",
+                                            nome_imagem_status,
+                                            int((itens_status_processados / max(total_status_items, 1)) * 100)
+                                        )
                             
                             # 3. Mover arquivos processados no Drive para pasta correta (5º ou 9º ano)
                             if mover_processados and arquivos_processados_agora:
@@ -6745,16 +6969,20 @@ if __name__ == "__main__":
                             # Limpar pasta temporária
                             shutil.rmtree(pasta_temp, ignore_errors=True)
                             
+                            update_status("idle", None, 100 if total_status_items else 0)
+                            registrar_status_log(f"Processamento concluido: {len(arquivos_processados_agora)} arquivo(s)")
                             print(f"\n✅ Processamento concluído!")
                             print(f"📊 Novos processados: {len(arquivos_processados_agora)}")
                             print(f"📝 Total no histórico: {len(historico['ids'])} IDs / {len(historico['nomes'])} Nomes")
                                 
                         except Exception as e:
+                            update_status("error", "Erro durante processamento", None)
                             print(f"❌ Erro durante processamento: {e}")
                             import traceback
                             traceback.print_exc()
                             print("🔄 Continuando monitoramento...")
                     else:
+                        update_status("idle", None, 0)
                         print("� Nenhum cartão para processar")
                     
                     print(f"⏰ Próxima verificação em {args.intervalo} minuto(s)...")
@@ -6770,6 +6998,7 @@ if __name__ == "__main__":
                     time.sleep(args.intervalo * 60)
                     
         except KeyboardInterrupt:
+            update_status("idle", None, 0)
             print("\n\n🛑 Monitoramento interrompido pelo usuário")
             print(f"Total de verificações realizadas: {contador_verificacoes}")
         

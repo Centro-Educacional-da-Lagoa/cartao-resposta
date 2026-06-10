@@ -9,14 +9,24 @@ import { EstatisticasService } from './estatisticas.service';
 export class EstatisticasController {
   constructor(private readonly estatisticasService: EstatisticasService) {}
 
-  @Get('9ano')
-  getNonoAno() {
-    return this.estatisticasService.getPorAno(AnoEscolar.NONO_ANO);
+  @Get('4ano')
+  getQuartoAno() {
+    return this.estatisticasService.getPorAno(AnoEscolar.QUARTO_ANO);
   }
 
   @Get('5ano')
   getQuintoAno() {
     return this.estatisticasService.getPorAno(AnoEscolar.QUINTO_ANO);
+  }
+
+  @Get('8ano')
+  getOitavoAno() {
+    return this.estatisticasService.getPorAno(AnoEscolar.OITAVO_ANO);
+  }
+
+  @Get('9ano')
+  getNonoAno() {
+    return this.estatisticasService.getPorAno(AnoEscolar.NONO_ANO);
   }
 
   @Get('geral')

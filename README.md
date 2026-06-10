@@ -82,11 +82,15 @@ pip install -r requirements.txt
 
 ### 2. Criar o arquivo .env e configurar com os seguintes nomes:
    GEMINI_API_KEY="Sua_key_aqui"
-   GOOGLE_SHEETS_9ANO="Sua_key_aqui"
+   GOOGLE_SHEETS_4ANO="Sua_key_aqui"
    GOOGLE_SHEETS_5ANO="Sua_key_aqui"
+   GOOGLE_SHEETS_8ANO="Sua_key_aqui"
+   GOOGLE_SHEETS_9ANO="Sua_key_aqui"
    DRIVER_FOLDER_ID="Sua_key_aqui"
-   DRIVER_FOLDER_9ANO="Sua_key_aqui"
+   DRIVER_FOLDER_4ANO="Sua_key_aqui"
    DRIVER_FOLDER_5ANO="Sua_key_aqui"
+   DRIVER_FOLDER_8ANO="Sua_key_aqui"
+   DRIVER_FOLDER_9ANO="Sua_key_aqui"
    GOOGLE_CREDENTIALS_JSON='{"type":"service_account","project_id":"...","private_key_id":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n","client_email":"...","client_id":"...","auth_uri":"...","token_uri":"...","auth_provider_x509_cert_url":"...","client_x509_cert_url":"...", "universe_domain":"googleapis.com"}'
 
 ### 3. (Opcional) Sincronizar com o banco via backend NestJS
@@ -306,13 +310,15 @@ processar todos os arquivos e enviar para o Google Sheets.
 
 Fluxo completo:
 1. Jogar todos os arquivos dentro da pasta principal do bot
-2. Detectar automaticamente gabaritos e alunos, podendo jogar 2 gabaritos de uma vez e todos os cartões-respostas
-2. Processa todos os cartões do 5° e 9° ano via IA e OCR
-3. Enviar resultados para Google Sheets e pastas de acordo com o ano detectado
+2. Detectar automaticamente os quatro gabaritos e todos os cartões-respostas
+3. Processar cartões do 4°, 5°, 8° e 9° ano via IA e OCR
+4. Enviar resultados para Google Sheets e pastas de acordo com o ano detectado
 
-OBS: O gabarito sempre tem que ter os seguintes critérios
-gabarito44.jpg | gabarito_44.jpg | gabarito44.png | gabarito_44.png
-gabarito52.jpg | gabarito_52.jpg | gabarito52.png | gabarito_52.png
+OBS: Os quatro gabaritos devem seguir exatamente este padrão de nome:
+gabarito_4ano.jpg | gabarito_4ano.png
+gabarito_5ano.jpg | gabarito_5ano.png
+gabarito_8ano.jpg | gabarito_8ano.png
+gabarito_9ano.jpg | gabarito_9ano.png
 
 
 

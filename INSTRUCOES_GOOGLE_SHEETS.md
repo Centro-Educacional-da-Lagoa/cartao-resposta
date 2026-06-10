@@ -9,8 +9,10 @@
                                               ↑ ESTE é o ID
 5. configurar o ID dentro das aspas no .env de acordo com o nome.
     DRIVER_FOLDER_ID="Seu_id_aqui"
-    DRIVER_FOLDER_9ANO="Seu_id_aqui"
+    DRIVER_FOLDER_4ANO="Seu_id_aqui"
     DRIVER_FOLDER_5ANO="Seu_id_aqui"
+    DRIVER_FOLDER_8ANO="Seu_id_aqui"
+    DRIVER_FOLDER_9ANO="Seu_id_aqui"
 
 ## PASSO 2: CRIAR PLANILHA DENTRO DAS SUBPASTAS 5° ANO E 9° ANO
 1. Acesse as pastas

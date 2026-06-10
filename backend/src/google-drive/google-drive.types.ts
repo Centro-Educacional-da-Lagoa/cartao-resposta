@@ -1,3 +1,5 @@
+import { AnoEscolar } from '../aluno/ano-escolar.enum';
+
 export type GoogleDriveFile = {
   id?: string | null;
   name?: string | null;
@@ -8,7 +10,7 @@ export type GoogleDriveFile = {
 
 export type PastaResponse = {
   status: 'success';
-  pasta: '5ano' | '9ano';
+  pasta: AnoEscolar;
   descricao: string;
   total_registros: number;
   arquivos: GoogleDriveFile[];

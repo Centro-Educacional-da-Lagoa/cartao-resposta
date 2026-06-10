@@ -37,6 +37,16 @@ import shutil
 import argparse
 from typing import List, Dict, Optional, Tuple
 from sklearn.cluster import KMeans
+from anos_escolares import (
+    ANOS_ESCOLARES,
+    NUMERO_POR_ANO,
+    QUESTOES_POR_ANO,
+    detectar_ano_escolar,
+    detectar_ano_por_turma as detectar_codigo_ano_por_turma,
+    nome_gabarito,
+    numero_questoes_por_ano,
+    rotulo_ano,
+)
 
 load_dotenv()
 
@@ -198,13 +208,14 @@ def _payload_resultado_aluno_backend(
     dados_aluno: Dict[str, str],
     respostas_aluno: List[str],
     resultado: Dict,
+    ano_escolar: str,
 ) -> Dict[str, object]:
     nome_base = os.path.splitext(file_name.replace("#", "_"))[0]
     fallback_nome = nome_base if nome_base else "ALUNO_NAO_IDENTIFICADO"
 
     return {
         "data": datetime.now().date().isoformat(),
-        "anoEscolar": "5ano" if len(respostas_aluno) == 44 else "9ano",
+        "anoEscolar": ano_escolar,
         "escola": _texto_backend(dados_aluno.get("escola"), "N/A", 255),
         "nomeCompleto": _texto_backend(dados_aluno.get("aluno"), fallback_nome, 255),
         "dataNascimento": _data_backend(dados_aluno.get("nascimento"), "1900-01-01"),
@@ -227,6 +238,7 @@ def enviar_resultado_para_backend(
     resultado: Dict,
     questoes_detectadas: int,
     origem: str,
+    ano_escolar: str,
 ) -> bool:
     if not backend_client:
         return False
@@ -236,6 +248,7 @@ def enviar_resultado_para_backend(
         dados_aluno=dados_aluno,
         respostas_aluno=respostas_aluno,
         resultado=resultado,
+        ano_escolar=ano_escolar,
     )
 
     if payload["dataNascimento"] == "1900-01-01":
@@ -2951,7 +2964,7 @@ def extrair_dados_completos_com_gemini(model, image_path: str, nome_arquivo: str
     - Nome do aluno
     - Turma
     - Data de nascimento
-    - Ano escolar (5° ou 9° ano) → retorna 44 ou 52 questões
+    - Ano escolar (4°, 5°, 8° ou 9° ano)
     
     Args:
         model: Instância do modelo Gemini configurado
@@ -2959,7 +2972,8 @@ def extrair_dados_completos_com_gemini(model, image_path: str, nome_arquivo: str
         nome_arquivo: Nome do arquivo (opcional, para detecção adicional)
     
     Returns:
-        Dicionário com chaves: 'escola', 'aluno', 'turma', 'nascimento', 'num_questoes'
+        Dicionário com chaves: 'escola', 'aluno', 'turma', 'nascimento',
+        'ano_escolar' e 'num_questoes'
         ou None se falhar
     """
     if not model:
@@ -2980,7 +2994,9 @@ def extrair_dados_completos_com_gemini(model, image_path: str, nome_arquivo: str
         3. TURMA - procure por campos como "Turma:", "Série:", "Ano:", etc.
         4. DATA DE NASCIMENTO - procure por campos como "Data de nascimento:", "Nascimento:", etc.
         5. ANO ESCOLAR - Procure cuidadosamente por texto que indique:
+           - "4° ano" ou "4º ano" ou "quarto ano" → RESPONDA: "4ano"
            - "5° ano" ou "5º ano" ou "quinto ano" → RESPONDA: "5ano"
+           - "8° ano" ou "8º ano" ou "oitavo ano" → RESPONDA: "8ano"
            - "9° ano" ou "9º ano" ou "nono ano" → RESPONDA: "9ano"
 
         INSTRUÇÕES:
@@ -2988,7 +3004,7 @@ def extrair_dados_completos_com_gemini(model, image_path: str, nome_arquivo: str
         - Se não encontrar, retorne "N/A"
         - Ignore títulos como "AVALIAÇÃO DIAGNÓSTICA", "CARTÃO-RESPOSTA"
         - Ignore nomes de times (Flamengo, Santos, etc.) e personagens (Naruto, Goku, etc.)
-        - IMPORTANTE: Procure CUIDADOSAMENTE por "5° ano" ou "9° ano" no cabeçalho do cartão
+        - IMPORTANTE: Diferencie cuidadosamente 4°, 5°, 8° e 9° ano
 
         FORMATO DE RESPOSTA (JSON):
         {
@@ -2996,7 +3012,7 @@ def extrair_dados_completos_com_gemini(model, image_path: str, nome_arquivo: str
             "aluno": "nome do aluno ou N/A",
             "turma": "turma ou N/A",
             "nascimento": "data ou N/A",
-            "ano_escolar": "5ano ou 9ano ou N/A"
+            "ano_escolar": "4ano ou 5ano ou 8ano ou 9ano ou N/A"
         }
         """
         
@@ -3016,34 +3032,24 @@ def extrair_dados_completos_com_gemini(model, image_path: str, nome_arquivo: str
             if not all(key in dados for key in ['escola', 'aluno', 'turma', 'nascimento']):
                 return None
             
-            # 🆕 CONVERTER "5ano"/"9ano" para número de questões
-            ano_escolar = dados.get('ano_escolar', 'N/A')
-            
-            if '5' in str(ano_escolar):
-                num_questoes = 44
-                print(f"   ✅ Gemini detectou: 5° ano (44 questões)")
-            elif '9' in str(ano_escolar):
-                num_questoes = 52
-                print(f"   ✅ Gemini detectou: 9° ano (52 questões)")
-            else:
-                # Fallback 1: tentar pelo nome do arquivo
-                if nome_arquivo:
-                    nome_lower = nome_arquivo.lower()
-                    if '5ano' in nome_lower or '5' in nome_lower.split('_')[0]:
-                        num_questoes = 44
-                        print(f"   ✅ Detectado pelo nome do arquivo: 5° ano (44 questões)")
-                    elif '9ano' in nome_lower or '9' in nome_lower.split('_')[0]:
-                        num_questoes = 52
-                        print(f"   ✅ Detectado pelo nome do arquivo: 9° ano (52 questões)")
-                    else:
-                        # Fallback 2: tentar pela turma
-                        num_questoes = detectar_ano_por_turma(dados.get('turma', ''))
-                else:
-                    # Fallback: tentar pela turma
-                    num_questoes = detectar_ano_por_turma(dados.get('turma', ''))
-            
-            # Adicionar número de questões ao resultado
-            dados['num_questoes'] = num_questoes
+            ano_escolar = detectar_ano_escolar(dados.get('ano_escolar'))
+
+            if not ano_escolar and nome_arquivo:
+                ano_escolar = detectar_ano_escolar(nome_arquivo)
+                if ano_escolar:
+                    print(f"   ✅ Ano detectado pelo nome do arquivo: {rotulo_ano(ano_escolar)}")
+
+            if not ano_escolar:
+                ano_escolar = detectar_ano_por_turma(dados.get('turma', ''))
+
+            dados['ano_escolar'] = ano_escolar
+            dados['num_questoes'] = numero_questoes_por_ano(ano_escolar)
+
+            if ano_escolar:
+                print(
+                    f"   ✅ Gemini detectou: {rotulo_ano(ano_escolar)} "
+                    f"({dados['num_questoes']} questões)"
+                )
             
             return dados
         
@@ -3094,74 +3100,44 @@ def extrair_cabecalho_com_fallback(model, image_path, numero_aluno=None):
         "nascimento": "N/A"
     }
 
-def detectar_ano_por_turma(turma: str) -> int:
+def detectar_ano_por_turma(turma: str) -> Optional[str]:
     """
-    Detecta se o aluno é do 5° ou 9° ano baseado na informação de turma.
-    
-    REGRA SIMPLES: 
-    - Se a turma COMEÇAR COM 5 → 5° ano (44 questões)
-    - Se a turma COMEÇAR COM 9 → 9° ano (52 questões)
-    - Se a turma CONTIVER 5 em qualquer lugar → 5° ano (44 questões)
-    - Se a turma CONTIVER 9 em qualquer lugar → 9° ano (52 questões)
+    Detecta 4°, 5°, 8° ou 9° ano pela informação de turma.
     
     Args:
-        turma: String contendo informação da turma (ex: "9A", "5° ano do Ensino Fundamental")
+        turma: Informação da turma, por exemplo "8A" ou "4° ano".
     
     Returns:
-        44 (para 5° ano) ou 52 (para 9° ano)
-        Padrão: 52 se não conseguir detectar
+        Código do ano escolar ou None.
     """
     if not turma or turma == "N/A" or str(turma).strip() == "":
-        print("   ⚠️ ATENÇÃO: Turma não detectada (N/A) - usando padrão: 52 questões (9° ano)")
+        print("   ⚠️ ATENÇÃO: Turma não detectada (N/A)")
         print("   💡 Certifique-se de que o campo 'TURMA' está visível no cartão!")
-        return 52
+        return None
     
     turma_str = str(turma).strip()
     
     print(f"   🔍 Analisando turma: '{turma_str}'")
     
-    # 🎯 REGRA 1: Se COMEÇAR com 5 → 5° ano (prioridade máxima)
-    if re.match(r'^5', turma_str, re.IGNORECASE):
-        print(f"   ✅ DETECTADO: Turma começa com '5' → 5° ano (44 questões)")
-        return 44
-    
-    # 🎯 REGRA 2: Se COMEÇAR com 9 → 9° ano (prioridade máxima)
-    if re.match(r'^9', turma_str, re.IGNORECASE):
-        print(f"   ✅ DETECTADO: Turma começa com '9' → 9° ano (52 questões)")
-        return 52
-    
-    # 🎯 REGRA 3: Se CONTÉM "5" em qualquer lugar → 5° ano
-    if re.search(r'5', turma_str, re.IGNORECASE):
-        print(f"   ✅ DETECTADO: Turma contém '5' → 5° ano (44 questões)")
-        return 44
-    
-    # 🎯 REGRA 4: Se CONTÉM "9" em qualquer lugar → 9° ano
-    if re.search(r'9', turma_str, re.IGNORECASE):
-        print(f"   ✅ DETECTADO: Turma contém '9' → 9° ano (52 questões)")
-        return 52
-    
-    # 🎯 REGRA 5: Palavras por extenso
-    turma_lower = turma_str.lower()
-    if 'quinto' in turma_lower or 'quint' in turma_lower:
-        print(f"   ✅ DETECTADO: Palavra 'quinto' → 5° ano (44 questões)")
-        return 44
-    
-    if 'nono' in turma_lower or 'non' in turma_lower:
-        print(f"   ✅ DETECTADO: Palavra 'nono' → 9° ano (52 questões)")
-        return 52
-    
-    # Se não detectar nada, usar padrão (52)
-    print(f"   ⚠️ NÃO RECONHECIDO: Nenhum indicador de ano encontrado em '{turma}' - usando padrão: 52 questões")
-    print(f"   💡 Turma detectada: '{turma_str}' - Verifique se contém '5' ou '9'")
-    return 52
+    ano_escolar = detectar_codigo_ano_por_turma(turma_str)
+
+    if ano_escolar:
+        print(
+            f"   ✅ DETECTADO: {rotulo_ano(ano_escolar)} "
+            f"({QUESTOES_POR_ANO[ano_escolar]} questões)"
+        )
+        return ano_escolar
+
+    print(f"   ⚠️ NÃO RECONHECIDO: Nenhum ano suportado encontrado em '{turma}'")
+    return None
 
 
-def detectar_ano_com_ocr_direto(image_path: str, debug: bool = False) -> int:
+def detectar_ano_com_ocr_direto(image_path: str, debug: bool = False) -> Optional[str]:
     """
     🆕 DETECÇÃO DIRETA POR OCR - FALLBACK quando Gemini falhar!
     
     Lê diretamente a área do cabeçalho onde está escrito:
-    "9° ano do Ensino Fundamental" ou "5° ano do Ensino Fundamental"
+    "4°", "5°", "8°" ou "9° ano do Ensino Fundamental"
     
     ⚠️ IMPORTANTE: Esta função só deve ser chamada quando o Gemini falhar!
     O Gemini é a solução principal. OCR é apenas backup.
@@ -3171,14 +3147,14 @@ def detectar_ano_com_ocr_direto(image_path: str, debug: bool = False) -> int:
         debug: Se deve exibir informações de debug
         
     Returns:
-        44 (para 5° ano) ou 52 (para 9° ano)
+        Código do ano escolar ou None.
     """
     try:
         # Carregar imagem
         img = cv2.imread(image_path)
         if img is None:
             print(f"   ⚠️ Erro ao carregar imagem para OCR direto")
-            return 52
+            return None
         
         height, width = img.shape[:2]
         
@@ -3202,192 +3178,175 @@ def detectar_ano_com_ocr_direto(image_path: str, debug: bool = False) -> int:
         else:
             print(f"   🔍 OCR (FALLBACK) analisando cabeçalho...")
         
-        # 🎯 DETECÇÃO ESPECÍFICA - Priorizar padrões completos "5° ano" ou "9° ano"
-        
-        # PRIORIDADE 1: Detectar "5° ano" ou "5º ano" com símbolos de grau
-        if re.search(r'5[°ºª]\s*ano', texto_limpo, re.IGNORECASE):
-            print(f"   ✅ OCR (FALLBACK): Detectado '5° ano' no cabeçalho → 44 questões")
-            return 44
-        
-        # PRIORIDADE 2: Detectar "9° ano" ou "9º ano" com símbolos de grau
-        if re.search(r'9[°ºª]\s*ano', texto_limpo, re.IGNORECASE):
-            print(f"   ✅ OCR (FALLBACK): Detectado '9° ano' no cabeçalho → 52 questões")
-            return 52
-        
-        # PRIORIDADE 3: Detectar palavras por extenso
-        if re.search(r'quint[oa]?\s+ano', texto_limpo, re.IGNORECASE):
-            print(f"   ✅ OCR (FALLBACK): Detectado 'quinto ano' no cabeçalho → 44 questões")
-            return 44
-        
-        if re.search(r'non[oa]?\s+ano', texto_limpo, re.IGNORECASE):
-            print(f"   ✅ OCR (FALLBACK): Detectado 'nono ano' no cabeçalho → 52 questões")
-            return 52
-        
-        # PRIORIDADE 4: Apenas números seguidos de "ano" (mais permissivo)
-        if re.search(r'\b5\s+ano', texto_limpo, re.IGNORECASE):
-            print(f"   ✅ OCR (FALLBACK): Detectado '5 ano' no cabeçalho → 44 questões")
-            return 44
-        
-        if re.search(r'\b9\s+ano', texto_limpo, re.IGNORECASE):
-            print(f"   ✅ OCR (FALLBACK): Detectado '9 ano' no cabeçalho → 52 questões")
-            return 52
-        
-        # PADRÃO: Se nada for detectado, usar 52 questões (9° ano)
-        print(f"   ⚠️ OCR (FALLBACK ATIVO): Não conseguiu detectar '5° ano' ou '9° ano' no cabeçalho")
+        ano_escolar = detectar_ano_escolar(texto_limpo)
+        if ano_escolar:
+            print(
+                f"   ✅ OCR (FALLBACK): Detectado {rotulo_ano(ano_escolar)} "
+                f"→ {QUESTOES_POR_ANO[ano_escolar]} questões"
+            )
+            return ano_escolar
+
+        print("   ⚠️ OCR (FALLBACK ATIVO): Não conseguiu detectar um ano suportado")
         print(f"   ℹ️  Texto detectado: '{texto_limpo[:100]}'")  # Mostrar primeiros 100 chars
-        print(f"   💡 Quando houver múltiplos cartões, o destino será determinado pela MAIORIA")
-        print(f"   🎯 Usando padrão: 52 questões (9° ano)")
-        return 52
+        return None
         
     except Exception as e:
         print(f"   ❌ Erro no OCR direto: {e}")
-        return 52
+        return None
 
 
 
 def carregar_gabaritos_automatico(pasta_gabaritos: str = ".", debug: bool = False) -> dict:
     """
-    Carrega AMBOS os gabaritos (44 e 52 questões) automaticamente.
-    
-    Procura por arquivos de IMAGEM com os seguintes padrões:
-    - gabarito_44.png/.jpg/.jpeg ou gabarito44.png/.jpg/.jpeg → Gabarito de 44 questões (5° ano)
-    - gabarito_52.png/.jpg/.jpeg ou gabarito52.png/.jpg/.jpeg → Gabarito de 52 questões (9° ano)
-    
-    Args:
-        pasta_gabaritos: Diretório onde estão os gabaritos
-        debug: Se deve mostrar informações de debug
-    
-    Returns:
-        Dicionário com os gabaritos processados:
-        {
-            44: {
-                'arquivo': 'gabarito_44.pdf',
-                'caminho': '/path/to/gabarito_44.pdf',
-                'imagem': '/path/to/gabarito_44_processed.png',
-                'respostas': ['A', 'B', 'C', ...]
-            },
-            52: {
-                'arquivo': 'gabarito_52.pdf',
-                'caminho': '/path/to/gabarito_52.pdf',
-                'imagem': '/path/to/gabarito_52_processed.png',
-                'respostas': ['A', 'B', 'C', ...]
-            }
-        }
+    Carrega os quatro gabaritos nomeados por ano escolar.
+
+    Padrao obrigatorio: gabarito_4ano, gabarito_5ano, gabarito_8ano
+    e gabarito_9ano, com extensao PNG, JPG ou JPEG.
     """
     print("\n" + "=" * 80)
     print("📚 SISTEMA AUTOMATIZADO - CARREGANDO GABARITOS")
     print("=" * 80)
-    print("ℹ️  O sistema carregará automaticamente 2 gabaritos (PNG/JPG):")
-    print("   • gabarito_44.png/jpg (ou gabarito44.png/jpg) → 5° ano (44 questões)")
-    print("   • gabarito_52.png/jpg (ou gabarito52.png/jpg) → 9° ano (52 questões)")
+    print("ℹ️  O sistema carregará automaticamente 4 gabaritos (PNG/JPG):")
+    for ano_escolar in ANOS_ESCOLARES:
+        print(
+            f"   • {nome_gabarito(ano_escolar)}.png/jpg → "
+            f"{rotulo_ano(ano_escolar)} ({QUESTOES_POR_ANO[ano_escolar]} questões)"
+        )
     print("=" * 80)
-    
-    gabaritos = {}
-    
-    # Listar arquivos na pasta
+
     try:
         arquivos = os.listdir(pasta_gabaritos)
     except Exception as e:
         print(f"❌ Erro ao listar pasta '{pasta_gabaritos}': {e}")
         return {}
-    
-    # Procurar gabaritos
-    gabarito_44_file = None
-    gabarito_52_file = None
-    
-    # Extensões de imagem aceitas para gabaritos
-    EXTENSOES_IMAGEM = ('.png', '.jpg', '.jpeg')
-    
-    for arquivo in arquivos:
-        arquivo_lower = arquivo.lower()
-        
-        # Procurar gabarito de 44 questões (APENAS IMAGENS)
-        if ('gabarito_44' in arquivo_lower or 'gabarito44' in arquivo_lower) and \
-           arquivo_lower.endswith(EXTENSOES_IMAGEM):
-            gabarito_44_file = arquivo
-            print(f"✅ Gabarito 44 questões encontrado: {arquivo}")
-        
-        # Procurar gabarito de 52 questões (APENAS IMAGENS)
-        elif ('gabarito_52' in arquivo_lower or 'gabarito52' in arquivo_lower) and \
-             arquivo_lower.endswith(EXTENSOES_IMAGEM):
-            gabarito_52_file = arquivo
-            print(f"✅ Gabarito 52 questões encontrado: {arquivo}")
-    
-    # Validar se ambos os gabaritos foram encontrados
-    if not gabarito_44_file:
-        print("❌ ERRO: Gabarito de 44 questões não encontrado!")
-        print("   💡 Renomeie o arquivo de imagem para: gabarito_44.png, gabarito_44.jpg, gabarito44.png, etc.")
-    
-    if not gabarito_52_file:
-        print("❌ ERRO: Gabarito de 52 questões não encontrado!")
-        print("   💡 Renomeie o arquivo de imagem para: gabarito_52.png, gabarito_52.jpg, gabarito52.png, etc.")
-    
-    if not gabarito_44_file or not gabarito_52_file:
-        print("\n⚠️ Sistema automatizado requer AMBOS os gabaritos!")
+
+    arquivos_por_nome = {arquivo.lower(): arquivo for arquivo in arquivos}
+    gabaritos = {}
+
+    for ano_escolar in ANOS_ESCOLARES:
+        nome_base = nome_gabarito(ano_escolar)
+        arquivo = next(
+            (
+                arquivos_por_nome.get(f"{nome_base}{extensao}")
+                for extensao in (".png", ".jpg", ".jpeg")
+                if arquivos_por_nome.get(f"{nome_base}{extensao}")
+            ),
+            None,
+        )
+        if not arquivo:
+            print(f"❌ ERRO: {nome_base}.png/.jpg/.jpeg não encontrado!")
+            continue
+
+        num_questoes = QUESTOES_POR_ANO[ano_escolar]
+        print(
+            f"\n🔄 Processando {arquivo}: "
+            f"{rotulo_ano(ano_escolar)} ({num_questoes} questões)"
+        )
+        try:
+            caminho = os.path.join(pasta_gabaritos, arquivo)
+            imagem = preprocessar_arquivo(caminho, nome_base, debug=debug)
+            respostas = detectar_respostas_por_tipo(
+                imagem,
+                num_questoes=num_questoes,
+                debug=debug,
+                eh_gabarito=True,
+            )
+            questoes_detectadas = sum(1 for resposta in respostas if resposta != '?')
+            gabaritos[ano_escolar] = {
+                'arquivo': arquivo,
+                'caminho': caminho,
+                'imagem': imagem,
+                'respostas': respostas,
+                'questoes_detectadas': questoes_detectadas,
+                'num_questoes': num_questoes,
+            }
+            print(
+                f"✅ {rotulo_ano(ano_escolar)}: "
+                f"{questoes_detectadas}/{num_questoes} questões detectadas"
+            )
+            if debug:
+                exibir_gabarito_simples(respostas)
+        except Exception as e:
+            print(f"❌ Erro ao processar {arquivo}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    faltantes = [ano for ano in ANOS_ESCOLARES if ano not in gabaritos]
+    if faltantes:
+        nomes_faltantes = ", ".join(nome_gabarito(ano) for ano in faltantes)
+        print(f"\n⚠️ Sistema automatizado requer os quatro gabaritos: {nomes_faltantes}")
         return {}
-    
-    # Processar gabarito de 44 questões
-    print(f"\n🔄 Processando gabarito de 44 questões...")
-    try:
-        caminho_44 = os.path.join(pasta_gabaritos, gabarito_44_file)
-        img_44 = preprocessar_arquivo(caminho_44, "gabarito_44", debug=debug)
-        respostas_44 = detectar_respostas_por_tipo(img_44, num_questoes=44, debug=debug, eh_gabarito=True)
-        
-        questoes_detectadas_44 = sum(1 for r in respostas_44 if r != '?')
-        print(f"✅ Gabarito 44: {questoes_detectadas_44}/44 questões detectadas")
-        
-        gabaritos[44] = {
-            'arquivo': gabarito_44_file,
-            'caminho': caminho_44,
-            'imagem': img_44,
-            'respostas': respostas_44,
-            'questoes_detectadas': questoes_detectadas_44
-        }
-        
-        if debug:
-            print(f"\n📋 Gabarito 44 questões:")
-            exibir_gabarito_simples(respostas_44)
-            
-    except Exception as e:
-        print(f"❌ Erro ao processar gabarito de 44 questões: {e}")
-        import traceback
-        traceback.print_exc()
-        return {}
-    
-    # Processar gabarito de 52 questões
-    print(f"\n🔄 Processando gabarito de 52 questões...")
-    try:
-        caminho_52 = os.path.join(pasta_gabaritos, gabarito_52_file)
-        img_52 = preprocessar_arquivo(caminho_52, "gabarito_52", debug=debug)
-        respostas_52 = detectar_respostas_por_tipo(img_52, num_questoes=52, debug=debug, eh_gabarito=True)
-        
-        questoes_detectadas_52 = sum(1 for r in respostas_52 if r != '?')
-        print(f"✅ Gabarito 52: {questoes_detectadas_52}/52 questões detectadas")
-        
-        gabaritos[52] = {
-            'arquivo': gabarito_52_file,
-            'caminho': caminho_52,
-            'imagem': img_52,
-            'respostas': respostas_52,
-            'questoes_detectadas': questoes_detectadas_52
-        }
-        
-        if debug:
-            print(f"\n📋 Gabarito 52 questões:")
-            exibir_gabarito_simples(respostas_52)
-            
-    except Exception as e:
-        print(f"❌ Erro ao processar gabarito de 52 questões: {e}")
-        import traceback
-        traceback.print_exc()
-        return {}
-    
+
     print(f"\n{'=' * 80}")
-    print("✅ AMBOS OS GABARITOS CARREGADOS COM SUCESSO!")
-    print(f"   • 44 questões: {gabaritos[44]['questoes_detectadas']}/44 questões")
-    print(f"   • 52 questões: {gabaritos[52]['questoes_detectadas']}/52 questões")
+    print("✅ OS QUATRO GABARITOS FORAM CARREGADOS COM SUCESSO!")
+    for ano_escolar in ANOS_ESCOLARES:
+        print(
+            f"   • {rotulo_ano(ano_escolar)}: "
+            f"{gabaritos[ano_escolar]['questoes_detectadas']}/"
+            f"{QUESTOES_POR_ANO[ano_escolar]} questões"
+        )
     print(f"{'=' * 80}\n")
-    
+
+    return gabaritos
+
+
+def carregar_gabaritos_do_drive(
+    drive_service,
+    pasta_drive_id: str,
+    pasta_temporaria: str,
+    debug: bool = False,
+) -> dict:
+    """Baixa e processa os quatro gabaritos da pasta de upload do Drive."""
+    query = f"'{pasta_drive_id}' in parents and trashed = false"
+    response = drive_service.files().list(
+        q=query,
+        fields="files(id, name, mimeType)",
+        pageSize=1000,
+    ).execute()
+    arquivos = response.get('files', [])
+    arquivos_por_nome = {arquivo.get('name', '').lower(): arquivo for arquivo in arquivos}
+    gabaritos = {}
+
+    for ano_escolar in ANOS_ESCOLARES:
+        nome_base = nome_gabarito(ano_escolar)
+        arquivo_info = next(
+            (
+                arquivos_por_nome.get(f"{nome_base}{extensao}")
+                for extensao in (".png", ".jpg", ".jpeg")
+                if arquivos_por_nome.get(f"{nome_base}{extensao}")
+            ),
+            None,
+        )
+        if not arquivo_info:
+            print(f"❌ {nome_base}.png/.jpg/.jpeg não encontrado no Drive")
+            continue
+
+        num_questoes = QUESTOES_POR_ANO[ano_escolar]
+        print(
+            f"✅ {arquivo_info['name']}: "
+            f"{rotulo_ano(ano_escolar)} ({num_questoes} questões)"
+        )
+        request = drive_service.files().get_media(fileId=arquivo_info['id'])
+        caminho = os.path.join(pasta_temporaria, arquivo_info['name'])
+        with open(caminho, 'wb') as arquivo_local:
+            downloader = MediaIoBaseDownload(arquivo_local, request)
+            concluido = False
+            while not concluido:
+                _, concluido = downloader.next_chunk()
+
+        imagem = preprocessar_arquivo(caminho, nome_base, debug=debug)
+        respostas = detectar_respostas_por_tipo(
+            imagem,
+            num_questoes=num_questoes,
+            debug=debug,
+            eh_gabarito=True,
+        )
+        gabaritos[ano_escolar] = respostas
+        print(
+            f"   ✓ Questões processadas: "
+            f"{sum(1 for resposta in respostas if resposta != '?')}/{num_questoes}"
+        )
+
     return gabaritos
 
 
@@ -3403,8 +3362,8 @@ def processar_cartoes_automatizado(
     
     Para cada cartão do aluno:
     1. Extrai dados do cabeçalho (nome, turma, escola, nascimento)
-    2. Detecta automaticamente se é 5° ou 9° ano pela turma
-    3. Seleciona o gabarito correto (44 ou 52 questões)
+    2. Detecta automaticamente se é 4°, 5°, 8° ou 9° ano pela turma
+    3. Seleciona o gabarito específico do ano
     4. Compara as respostas e calcula o resultado
     5. Envia para Google Sheets (se habilitado)
     
@@ -3423,7 +3382,7 @@ def processar_cartoes_automatizado(
     print("=" * 80)
     
     # Validar gabaritos
-    if not gabaritos or 44 not in gabaritos or 52 not in gabaritos:
+    if not gabaritos or any(ano not in gabaritos for ano in ANOS_ESCOLARES):
         print("❌ ERRO: Gabaritos não foram carregados corretamente!")
         return []
     
@@ -3496,13 +3455,20 @@ def processar_cartoes_automatizado(
             print(f"   🏫 Escola: {dados_aluno['escola']}")
             
             # 3. Detectar ano automaticamente pela turma
-            num_questoes = detectar_ano_por_turma(dados_aluno['turma'])
+            ano_escolar = detectar_ano_por_turma(dados_aluno['turma'])
+            if not ano_escolar:
+                print("   ❌ Ano escolar não identificado; cartão ignorado")
+                continue
+            num_questoes = QUESTOES_POR_ANO[ano_escolar]
             
             # 4. Selecionar gabarito correto
-            gabarito_selecionado = gabaritos[num_questoes]
+            gabarito_selecionado = gabaritos[ano_escolar]
             respostas_gabarito = gabarito_selecionado['respostas']
             
-            print(f"   📋 Usando gabarito de {num_questoes} questões")
+            print(
+                f"   📋 Usando {nome_gabarito(ano_escolar)} "
+                f"({num_questoes} questões)"
+            )
             
             # 5. Detectar respostas do aluno
             respostas_aluno = detectar_respostas_por_tipo(
@@ -3540,7 +3506,8 @@ def processar_cartoes_automatizado(
                         client_sheets,
                         dados_envio,
                         resultado,
-                        questoes_detectadas=questoes_detectadas
+                        questoes_detectadas=questoes_detectadas,
+                        ano_escolar=ano_escolar,
                     )
                     print(f"   ✓ Enviado para Google Sheets")
                 except Exception as e:
@@ -3553,6 +3520,7 @@ def processar_cartoes_automatizado(
                 "turma": dados_aluno['turma'],
                 "escola": dados_aluno['escola'],
                 "nascimento": dados_aluno['nascimento'],
+                "ano_escolar": ano_escolar,
                 "num_questoes": num_questoes,
                 "questoes_detectadas": questoes_detectadas,
                 "resultado": resultado
@@ -3570,12 +3538,13 @@ def processar_cartoes_automatizado(
     print(f"   Total processado: {len(resultados)}/{len(arquivos_alunos)}")
     
     if resultados:
-        # Separar por ano
-        alunos_44 = [r for r in resultados if r['num_questoes'] == 44]
-        alunos_52 = [r for r in resultados if r['num_questoes'] == 52]
-        
-        print(f"   • 5° ano (44 questões): {len(alunos_44)} alunos")
-        print(f"   • 9° ano (52 questões): {len(alunos_52)} alunos")
+        for ano_escolar in ANOS_ESCOLARES:
+            alunos_ano = [r for r in resultados if r['ano_escolar'] == ano_escolar]
+            print(
+                f"   • {rotulo_ano(ano_escolar)} "
+                f"({QUESTOES_POR_ANO[ano_escolar]} questões): "
+                f"{len(alunos_ano)} alunos"
+            )
         
         # Estatísticas
         media_percentual = sum(r['resultado']['percentual'] for r in resultados) / len(resultados)
@@ -4171,7 +4140,14 @@ def baixar_e_processar_pasta_drive(
         else:
             shutil.rmtree(pasta_temporaria, ignore_errors=True)
 
-def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=None, questoes_detectadas=None):
+def enviar_para_planilha(
+    client,
+    dados_aluno,
+    resultado_comparacao,
+    planilha_id=None,
+    questoes_detectadas=None,
+    ano_escolar=None,
+):
     """Envia dados para Google Sheets"""
 
     try:
@@ -4180,19 +4156,21 @@ def enviar_para_planilha(client, dados_aluno, resultado_comparacao, planilha_id=
         questoes_validas = resultado_comparacao.get("questoes_validas", total_questoes)
         anuladas = resultado_comparacao.get("anuladas", 0)
 
-        # 👉 Definir IDs fixos das planilhas
-        GOOGLE_SHEETS_9ANO = "1VJ0_w9eoQcc-ouBnRoq5lFQdR2fVZkqEtR-KArZMuvk"
-        GOOGLE_SHEETS_5ANO = "1DISO8jgKt4FQe2ha9v3kAgMUvoz9WI1HLO67xcsHEXg"
-
-        # 👉 Escolher a planilha com base no número de questões
-        if total_questoes == 44:
-            planilha_id = GOOGLE_SHEETS_5ANO
-            print("📄 Enviando para planilha de 44 questões...")
-        elif total_questoes == 52:
-            planilha_id = GOOGLE_SHEETS_9ANO
-            print("📄 Enviando para planilha de 52 questões...")
-        else:
+        ano_normalizado = detectar_ano_escolar(ano_escolar)
+        if ano_normalizado:
+            numero_ano = NUMERO_POR_ANO[ano_normalizado]
+            planilha_id = os.getenv(f"GOOGLE_SHEETS_{numero_ano}ANO") or planilha_id
+            print(f"📄 Enviando para planilha do {rotulo_ano(ano_normalizado)}...")
+        elif not planilha_id and total_questoes == 44:
+            planilha_id = os.getenv("GOOGLE_SHEETS_5ANO")
+        elif not planilha_id and total_questoes == 52:
+            planilha_id = os.getenv("GOOGLE_SHEETS_9ANO")
+        elif not planilha_id:
             print(f"⚠️ Número de questões ({total_questoes}) não reconhecido. Registro ignorado.")
+            return False
+
+        if not planilha_id:
+            print(f"⚠️ Planilha não configurada para {ano_escolar or total_questoes}.")
             return False
 
         # 👉 Abrir a planilha correta
@@ -6087,30 +6065,39 @@ if __name__ == "__main__":
     converter_pb = args.converter_pb
     threshold_pb = args.threshold
     
-    # 🆕 SISTEMA AUTOMATIZADO - Não há mais seleção manual de questões!
-    # Os gabaritos serão carregados automaticamente (44 e 52 questões)
-    # E o sistema escolherá o gabarito correto baseado na turma detectada no cartão
+    # O ano escolar define tanto o layout (44/52) quanto o gabarito.
     print("\n" + "=" * 80)
     print("🤖 SISTEMA DE CORREÇÃO AUTOMATIZADO")
     print("=" * 80)
     print("✨ Detecção automática de ano baseada na turma do aluno:")
-    print("   • 5° ano → 44 questões")
-    print("   • 9° ano → 52 questões")
-    print("\n💡 Certifique-se de ter 2 arquivos de gabarito (IMAGENS):")
-    print("   🖼️  gabarito_44.png (ou .jpg) → Para alunos do 5° ano")
-    print("   🖼️  gabarito_52.png (ou .jpg) → Para alunos do 9° ano")
+    for ano_escolar in ANOS_ESCOLARES:
+        print(
+            f"   • {rotulo_ano(ano_escolar)} → "
+            f"{QUESTOES_POR_ANO[ano_escolar]} questões"
+        )
+    print("\n💡 Gabaritos obrigatórios:")
+    for ano_escolar in ANOS_ESCOLARES:
+        print(f"   🖼️  {nome_gabarito(ano_escolar)}.png (ou .jpg)")
     print(f"🧭 Correção de perspectiva: {'ATIVADA' if PERSPECTIVA_HABILITADA else 'DESATIVADA (--no-perspectiva)'}")
     print("=" * 80)
 
     # 👉 Carregar IDs das pastas do Google Drive do arquivo .env
-    DRIVER_FOLDER_UPLOAD = os.getenv("DRIVER_FOLDER_ID")  # Pasta de UPLOAD (origem)
-    DRIVER_FOLDER_5ANO = os.getenv("DRIVER_FOLDER_5ANO")   # Pasta 5º ano (destino 44 questões)
-    DRIVER_FOLDER_9ANO = os.getenv("DRIVER_FOLDER_9ANO")   # Pasta 9º ano (destino 52 questões)
+    DRIVER_FOLDER_UPLOAD = os.getenv("DRIVER_FOLDER_ID") or os.getenv("DRIVE_FOLDER_ID")
+    PASTAS_DESTINO_POR_ANO = {
+        ano_escolar: (
+            os.getenv(f"DRIVER_FOLDER_{NUMERO_POR_ANO[ano_escolar]}ANO")
+            or os.getenv(f"DRIVE_FOLDER_{NUMERO_POR_ANO[ano_escolar]}ANO")
+        )
+        for ano_escolar in ANOS_ESCOLARES
+    }
     
     # Validar se as variáveis foram carregadas
-    if not all([DRIVER_FOLDER_UPLOAD, DRIVER_FOLDER_5ANO, DRIVER_FOLDER_9ANO]):
+    if not DRIVER_FOLDER_UPLOAD or any(not pasta for pasta in PASTAS_DESTINO_POR_ANO.values()):
         print("❌ ERRO: Variáveis de ambiente não configuradas no .env!")
-        print("   Verifique se DRIVER_FOLDER_ID, DRIVER_FOLDER_5ANO e DRIVER_FOLDER_9ANO estão definidos.")
+        print(
+            "   Configure DRIVER_FOLDER_ID e DRIVER_FOLDER_4ANO, "
+            "DRIVER_FOLDER_5ANO, DRIVER_FOLDER_8ANO, DRIVER_FOLDER_9ANO."
+        )
         exit(1)
     
     # Sempre usa a pasta de UPLOAD como origem
@@ -6124,8 +6111,8 @@ if __name__ == "__main__":
     # 🆕 Pastas de destino serão escolhidas AUTOMATICAMENTE por aluno
     # Com base no ano detectado na turma
     print(f"\n📁 Pastas de destino configuradas:")
-    print(f"   • 5° ano → {DRIVER_FOLDER_5ANO}")
-    print(f"   • 9° ano → {DRIVER_FOLDER_9ANO}")
+    for ano_escolar in ANOS_ESCOLARES:
+        print(f"   • {rotulo_ano(ano_escolar)} → {PASTAS_DESTINO_POR_ANO[ano_escolar]}")
     print("=" * 80)
 
     # 🆕 MODO ESPECIAL: PDF COM MÚLTIPLAS PÁGINAS
@@ -6178,8 +6165,12 @@ if __name__ == "__main__":
         print(f"⏰ Intervalo: {args.intervalo} minutos")
         print(f"📂 Pasta de ORIGEM (upload): {pasta_drive_id}")
         print(f"📁 Pastas de DESTINO:")
-        print(f"   • 5° ano (44 questões) → {DRIVER_FOLDER_5ANO}")
-        print(f"   • 9° ano (52 questões) → {DRIVER_FOLDER_9ANO}")
+        for ano_escolar in ANOS_ESCOLARES:
+            print(
+                f"   • {rotulo_ano(ano_escolar)} "
+                f"({QUESTOES_POR_ANO[ano_escolar]} questões) → "
+                f"{PASTAS_DESTINO_POR_ANO[ano_escolar]}"
+            )
         print(f"🗄️ Sync Banco: {'ATIVADO' if backend_client else 'DESATIVADO'}")
         print("✨ Sistema detectará automaticamente o ano de cada cartão")
         print("💡 Pressione Ctrl+C para parar")
@@ -6352,10 +6343,8 @@ if __name__ == "__main__":
                             
                             if enviar_para_sheets:
                                 client = configurar_google_sheets()
-                                PLANILHA_ID = os.getenv('GOOGLE_SHEETS_9ANO')
                             else:
                                 client = None
-                                PLANILHA_ID = None
                             
                             drive_service = configurar_google_drive_service_completo()
                             
@@ -6363,81 +6352,23 @@ if __name__ == "__main__":
                             pasta_temp = tempfile.mkdtemp(prefix="cartoes_novos_")
                             print(f"📁 Pasta temporária: {pasta_temp}")
                             
-                            # 🆕 1. CARREGAR AMBOS OS GABARITOS AUTOMATICAMENTE
+                            # 1. Carregar os quatro gabaritos automaticamente
                             print(f"\n{'='*80}")
                             print("📚 CARREGANDO GABARITOS AUTOMATICAMENTE")
                             print(f"{'='*80}")
-                            
-                            # Baixar gabaritos do Drive
-                            gabaritos_dict = {}
-                            
-                            # Buscar gabarito de 44 questões
-                            query_gab44 = f"'{pasta_drive_id}' in parents and (name contains 'gabarito_44' or name contains 'gabarito44') and trashed = false"
-                            results_44 = drive_service.files().list(
-                                q=query_gab44,
-                                fields="files(id, name, mimeType)",
-                                pageSize=1
-                            ).execute()
-                            
-                            gab44_files = results_44.get('files', [])
-                            if gab44_files:
-                                gab44_info = gab44_files[0]
-                                print(f"✅ Gabarito 44 questões: {gab44_info['name']}")
-                                
-                                # Baixar
-                                request = drive_service.files().get_media(fileId=gab44_info['id'])
-                                gab44_path = os.path.join(pasta_temp, gab44_info['name'])
-                                with open(gab44_path, 'wb') as f:
-                                    downloader = MediaIoBaseDownload(f, request)
-                                    done = False
-                                    while not done:
-                                        status, done = downloader.next_chunk()
-                                
-                                # Processar
-                                gab44_img = preprocessar_arquivo(gab44_path, "gabarito_44", debug=debug_mode)
-                                respostas_44 = detectar_respostas_por_tipo(gab44_img, num_questoes=44, debug=debug_mode, eh_gabarito=True)
-                                gabaritos_dict[44] = respostas_44
-                                print(f"   ✓ 44 questões processadas: {sum(1 for r in respostas_44 if r != '?')}/44")
-                            else:
-                                print("❌ Gabarito de 44 questões não encontrado!")
-                                
-                            # Buscar gabarito de 52 questões
-                            query_gab52 = f"'{pasta_drive_id}' in parents and (name contains 'gabarito_52' or name contains 'gabarito52') and trashed = false"
-                            results_52 = drive_service.files().list(
-                                q=query_gab52,
-                                fields="files(id, name, mimeType)",
-                                pageSize=1
-                            ).execute()
-                            
-                            gab52_files = results_52.get('files', [])
-                            if gab52_files:
-                                gab52_info = gab52_files[0]
-                                print(f"✅ Gabarito 52 questões: {gab52_info['name']}")
-                                
-                                # Baixar
-                                request = drive_service.files().get_media(fileId=gab52_info['id'])
-                                gab52_path = os.path.join(pasta_temp, gab52_info['name'])
-                                with open(gab52_path, 'wb') as f:
-                                    downloader = MediaIoBaseDownload(f, request)
-                                    done = False
-                                    while not done:
-                                        status, done = downloader.next_chunk()
-                                
-                                # Processar
-                                gab52_img = preprocessar_arquivo(gab52_path, "gabarito_52", debug=debug_mode)
-                                respostas_52 = detectar_respostas_por_tipo(gab52_img, num_questoes=52, debug=debug_mode, eh_gabarito=True)
-                                gabaritos_dict[52] = respostas_52
-                                print(f"   ✓ 52 questões processadas: {sum(1 for r in respostas_52 if r != '?')}/52")
-                            else:
-                                print("❌ Gabarito de 52 questões não encontrado!")
-                            
-                            # Validar se ambos foram carregados
-                            if 44 not in gabaritos_dict or 52 not in gabaritos_dict:
-                                print("\n❌ ERRO: Ambos os gabaritos são necessários!")
-                                print("   Certifique-se de ter gabarito_44.png e gabarito_52.png no Drive")
+
+                            gabaritos_dict = carregar_gabaritos_do_drive(
+                                drive_service,
+                                pasta_drive_id,
+                                pasta_temp,
+                                debug=debug_mode,
+                            )
+
+                            if any(ano not in gabaritos_dict for ano in ANOS_ESCOLARES):
+                                print("\n❌ ERRO: Os quatro gabaritos são necessários!")
                                 continue
                             
-                            print(f"\n✅ AMBOS OS GABARITOS CARREGADOS COM SUCESSO!")
+                            print(f"\n✅ OS QUATRO GABARITOS FORAM CARREGADOS COM SUCESSO!")
                             print(f"{'='*80}")
                             
                             # 2. Processar cada cartão NOVO (separar PDFs de imagens)
@@ -6524,10 +6455,8 @@ if __name__ == "__main__":
                                         
                                         print(f"✅ Todas as páginas prontas!")
                                         
-                                        # 🆕 Variável para rastrear a pasta destino do PDF
-                                        # Se todas as páginas forem do mesmo ano, vai para aquela pasta
-                                        # Se houver páginas mistas, vai para a pasta do 9° ano
-                                        pastas_detectadas = []
+                                        # Rastreia os anos das paginas para escolher o destino do PDF.
+                                        anos_detectados = []
                                         
                                         # Processar CADA página como um aluno
                                         print(f"\n{'─'*60}")
@@ -6552,6 +6481,7 @@ if __name__ == "__main__":
                                                 )
                                                 
                                                 # 🆕 USAR EXTRAÇÃO OTIMIZADA (1 chamada única ao Gemini)
+                                                ano_escolar_pagina = None
                                                 num_questoes_pagina = None
                                                 dados_aluno = None
                                                 
@@ -6564,20 +6494,42 @@ if __name__ == "__main__":
                                                     )
                                                     if dados_completos:
                                                         dados_aluno = dados_completos
-                                                        num_questoes_pagina = dados_completos.get('num_questoes')
-                                                        if num_questoes_pagina:
-                                                            print(f"   ✅ Gemini detectou com sucesso: {num_questoes_pagina} questões")
+                                                        ano_escolar_pagina = dados_completos.get('ano_escolar')
+                                                        if ano_escolar_pagina:
+                                                            num_questoes_pagina = QUESTOES_POR_ANO[ano_escolar_pagina]
+                                                            print(
+                                                                f"   ✅ Gemini detectou: "
+                                                                f"{rotulo_ano(ano_escolar_pagina)} "
+                                                                f"({num_questoes_pagina} questões)"
+                                                            )
                                                 
                                                 # FALLBACK: Se Gemini falhar, usar OCR direto
-                                                if not num_questoes_pagina:
+                                                if not ano_escolar_pagina:
                                                     print(f"   ⚠️ Gemini falhou - usando OCR como fallback")
                                                     print(f"   💡 A pasta de destino será definida pela MAIORIA de ocorrências")
-                                                    num_questoes_pagina = detectar_ano_com_ocr_direto(pagina_img_proc, debug=debug_mode)
-                                                    print(f"   📊 OCR (fallback) detectou: {num_questoes_pagina} questões")
+                                                    ano_escolar_pagina = detectar_ano_com_ocr_direto(
+                                                        pagina_img_proc,
+                                                        debug=debug_mode,
+                                                    )
+                                                    if ano_escolar_pagina:
+                                                        num_questoes_pagina = QUESTOES_POR_ANO[ano_escolar_pagina]
+                                                        print(
+                                                            f"   📊 OCR detectou: "
+                                                            f"{rotulo_ano(ano_escolar_pagina)} "
+                                                            f"({num_questoes_pagina} questões)"
+                                                        )
                                                 
                                                 # Se dados do aluno não foram extraídos, usar OCR
                                                 if not dados_aluno:
                                                     dados_aluno = extrair_cabecalho_com_ocr_fallback(pagina_img_proc)
+
+                                                if not ano_escolar_pagina and dados_aluno:
+                                                    ano_escolar_pagina = detectar_ano_por_turma(
+                                                        dados_aluno.get("turma", "")
+                                                    )
+                                                    num_questoes_pagina = numero_questoes_por_ano(
+                                                        ano_escolar_pagina
+                                                    )
                                                 
                                                 if not dados_aluno or dados_aluno.get("aluno") == "N/A":
                                                     dados_aluno = {
@@ -6586,24 +6538,22 @@ if __name__ == "__main__":
                                                         "turma": "N/A",
                                                         "nascimento": "N/A"
                                                     }
+
+                                                if not ano_escolar_pagina:
+                                                    print("   ❌ Ano escolar não identificado; página ignorada")
+                                                    itens_status_processados += 1
+                                                    continue
                                                 
-                                                print(f"   🔍 DEBUG - Dados extraídos: Escola={dados_aluno.get('escola')}, Aluno={dados_aluno.get('aluno')}, Turma={dados_aluno.get('turma')}, Nasc={dados_aluno.get('nascimento')}, Questões={num_questoes_pagina}")
+                                                print(f"   🔍 DEBUG - Dados extraídos: Escola={dados_aluno.get('escola')}, Aluno={dados_aluno.get('aluno')}, Turma={dados_aluno.get('turma')}, Nasc={dados_aluno.get('nascimento')}, Ano={ano_escolar_pagina}, Questões={num_questoes_pagina}")
                                                 
-                                                # 🆕 SELECIONAR PASTA DE DESTINO BASEADA NO ANO DETECTADO
-                                                if num_questoes_pagina == 44:
-                                                    pasta_destino_pagina = DRIVER_FOLDER_5ANO
-                                                    print(f"   📁 Destino: Pasta 5° ano")
-                                                else:  # 52 questões
-                                                    pasta_destino_pagina = DRIVER_FOLDER_9ANO
-                                                    print(f"   📁 Destino: Pasta 9° ano")
+                                                pasta_destino_pagina = PASTAS_DESTINO_POR_ANO[ano_escolar_pagina]
+                                                print(f"   📁 Destino: Pasta {rotulo_ano(ano_escolar_pagina)}")
                                                 
-                                                # 🆕 Registrar pasta detectada para esta página
-                                                pastas_detectadas.append(pasta_destino_pagina)
+                                                anos_detectados.append(ano_escolar_pagina)
                                                 
-                                                # 🆕 SELECIONAR GABARITO CORRETO PARA ESTA PÁGINA
-                                                respostas_gabarito_correto = gabaritos_dict.get(num_questoes_pagina)
+                                                respostas_gabarito_correto = gabaritos_dict.get(ano_escolar_pagina)
                                                 if not respostas_gabarito_correto:
-                                                    print(f"   ❌ Gabarito de {num_questoes_pagina} questões não disponível!")
+                                                    print(f"   ❌ {nome_gabarito(ano_escolar_pagina)} não disponível!")
                                                     itens_status_processados += 1
                                                     update_status(
                                                         "running",
@@ -6650,23 +6600,20 @@ if __name__ == "__main__":
                                                 exibir_gabarito_simples(respostas_aluno)
                                                 print(f"{'─'*60}")
                                                 
-                                                # 🆕 SELECIONAR PASTA DE DESTINO BASEADA NO ANO DETECTADO
-                                                if num_questoes_pagina == 44:
-                                                    pasta_destino_pagina = DRIVER_FOLDER_5ANO
-                                                    print(f"   📁 Destino: Pasta 5° ano")
-                                                else:  # 52 questões
-                                                    pasta_destino_pagina = DRIVER_FOLDER_9ANO
-                                                    print(f"   📁 Destino: Pasta 9° ano")
-                                                
-                                                # Enviar para Sheets (já escolhe planilha correta automaticamente)
-                                                if client and PLANILHA_ID:
+                                                if client:
                                                     dados_envio = {
                                                         "Escola": dados_aluno.get("escola", "N/A"),
                                                         "Aluno": dados_aluno.get("aluno", "N/A"),
                                                         "Nascimento": dados_aluno.get("nascimento", "N/A"),
                                                         "Turma": dados_aluno.get("turma", "N/A")
                                                     }
-                                                    enviar_para_planilha(client, dados_envio, resultado, PLANILHA_ID, questoes_detectadas=questoes_detectadas)
+                                                    enviar_para_planilha(
+                                                        client,
+                                                        dados_envio,
+                                                        resultado,
+                                                        questoes_detectadas=questoes_detectadas,
+                                                        ano_escolar=ano_escolar_pagina,
+                                                    )
 
                                                 enviar_resultado_para_backend(
                                                     backend_client=backend_client,
@@ -6678,6 +6625,7 @@ if __name__ == "__main__":
                                                     resultado=resultado,
                                                     questoes_detectadas=questoes_detectadas,
                                                     origem="monitor_drive_pdf",
+                                                    ano_escolar=ano_escolar_pagina,
                                                 )
                                                 itens_status_processados += 1
                                                 record_correction(
@@ -6697,30 +6645,34 @@ if __name__ == "__main__":
                                         
                                         # Limpar imagens temporárias do PDF
                                         
-                                        # Se todas as páginas forem do mesmo ano, vai para aquela pasta
-                                        # Se houver mix, determina pela maioria (número de ocorrências)
-                                        if not pastas_detectadas:
-                                            pasta_destino_pdf = DRIVER_FOLDER_9ANO  # Padrão
-                                            num_questoes_pdf = 52
-                                        elif len(set(pastas_detectadas)) == 1:
-                                            # Todas as páginas do mesmo ano
-                                            pasta_destino_pdf = pastas_detectadas[0]
-                                            num_questoes_pdf = 44 if pasta_destino_pdf == DRIVER_FOLDER_5ANO else 52
-                                            ano_str = "5° ano" if num_questoes_pdf == 44 else "9° ano"
-                                            print(f"\n📁 PDF será movido para: {ano_str} (todas as páginas são do mesmo ano)")
+                                        if not anos_detectados:
+                                            print("\n⚠️ PDF sem páginas com ano identificado; arquivo não será movido")
+                                            itens_status_processados += 1
+                                            continue
+                                        elif len(set(anos_detectados)) == 1:
+                                            ano_escolar_pdf = anos_detectados[0]
+                                            print(
+                                                f"\n📁 PDF será movido para: "
+                                                f"{rotulo_ano(ano_escolar_pdf)} "
+                                                f"(todas as páginas são do mesmo ano)"
+                                            )
                                         else:
-                                            # Mix de anos - determina pela MAIORIA (número de ocorrências)
-                                            count_5ano = pastas_detectadas.count(DRIVER_FOLDER_5ANO)
-                                            count_9ano = pastas_detectadas.count(DRIVER_FOLDER_9ANO)
-                                            
-                                            if count_5ano > count_9ano:
-                                                pasta_destino_pdf = DRIVER_FOLDER_5ANO
-                                                num_questoes_pdf = 44
-                                                print(f"\n📁 PDF será movido para: 5° ano ({count_5ano} páginas de 5° ano vs {count_9ano} de 9° ano)")
-                                            else:
-                                                pasta_destino_pdf = DRIVER_FOLDER_9ANO
-                                                num_questoes_pdf = 52
-                                                print(f"\n📁 PDF será movido para: 9° ano ({count_9ano} páginas de 9° ano vs {count_5ano} de 5° ano)")
+                                            from collections import Counter
+
+                                            contagem_anos = Counter(anos_detectados)
+                                            ano_escolar_pdf, quantidade_maioria = contagem_anos.most_common(1)[0]
+                                            resumo = ", ".join(
+                                                f"{rotulo_ano(ano)}: {quantidade}"
+                                                for ano, quantidade in contagem_anos.items()
+                                            )
+                                            print(
+                                                f"\n📁 PDF misto será movido para "
+                                                f"{rotulo_ano(ano_escolar_pdf)} "
+                                                f"(maioria de {quantidade_maioria}; {resumo})"
+                                            )
+
+                                        pasta_destino_pdf = PASTAS_DESTINO_POR_ANO[ano_escolar_pdf]
+                                        num_questoes_pdf = QUESTOES_POR_ANO[ano_escolar_pdf]
                                         
                                         # Marcar PDF como processado (ID + NOME + PASTA DESTINO)
                                         nome_sem_ext = os.path.splitext(pdf_info['name'])[0].lower()
@@ -6729,7 +6681,8 @@ if __name__ == "__main__":
                                             'nome_sem_ext': nome_sem_ext,
                                             'nome_original': pdf_info['name'],
                                             'pasta_destino': pasta_destino_pdf,  # 🆕 Usa pasta detectada
-                                            'num_questoes': num_questoes_pdf
+                                            'num_questoes': num_questoes_pdf,
+                                            'ano_escolar': ano_escolar_pdf,
                                         })
                                         print(f"\n✅ PDF processado: {pdf_info['name']}")
                                         
@@ -6779,6 +6732,7 @@ if __name__ == "__main__":
                                         aluno_img = preprocessar_arquivo(cartao_path, f"aluno_{img_idx}", debug=debug_mode)
                                         
                                         # 🆕 USAR EXTRAÇÃO OTIMIZADA (1 chamada única ao Gemini)
+                                        ano_escolar_aluno = None
                                         num_questoes_aluno = None
                                         dados_aluno = None
                                         
@@ -6791,20 +6745,42 @@ if __name__ == "__main__":
                                             )
                                             if dados_completos:
                                                 dados_aluno = dados_completos
-                                                num_questoes_aluno = dados_completos.get('num_questoes')
-                                                if num_questoes_aluno:
-                                                    print(f"   ✅ Gemini detectou com sucesso: {num_questoes_aluno} questões")
+                                                ano_escolar_aluno = dados_completos.get('ano_escolar')
+                                                if ano_escolar_aluno:
+                                                    num_questoes_aluno = QUESTOES_POR_ANO[ano_escolar_aluno]
+                                                    print(
+                                                        f"   ✅ Gemini detectou: "
+                                                        f"{rotulo_ano(ano_escolar_aluno)} "
+                                                        f"({num_questoes_aluno} questões)"
+                                                    )
                                         
                                         # FALLBACK: Se Gemini falhar, usar OCR direto
-                                        if not num_questoes_aluno:
+                                        if not ano_escolar_aluno:
                                             print(f"   ⚠️ Gemini falhou - usando OCR como fallback")
                                             print(f"   💡 A pasta de destino será definida corretamente")
-                                            num_questoes_aluno = detectar_ano_com_ocr_direto(aluno_img, debug=debug_mode)
-                                            print(f"   📊 OCR (fallback) detectou: {num_questoes_aluno} questões")
+                                            ano_escolar_aluno = detectar_ano_com_ocr_direto(
+                                                aluno_img,
+                                                debug=debug_mode,
+                                            )
+                                            if ano_escolar_aluno:
+                                                num_questoes_aluno = QUESTOES_POR_ANO[ano_escolar_aluno]
+                                                print(
+                                                    f"   📊 OCR detectou: "
+                                                    f"{rotulo_ano(ano_escolar_aluno)} "
+                                                    f"({num_questoes_aluno} questões)"
+                                                )
                                         
                                         # Se dados do aluno não foram extraídos, usar OCR
                                         if not dados_aluno:
                                             dados_aluno = extrair_cabecalho_com_ocr_fallback(aluno_img)
+
+                                        if not ano_escolar_aluno and dados_aluno:
+                                            ano_escolar_aluno = detectar_ano_por_turma(
+                                                dados_aluno.get("turma", "")
+                                            )
+                                            num_questoes_aluno = numero_questoes_por_ano(
+                                                ano_escolar_aluno
+                                            )
                                         
                                         if not dados_aluno or dados_aluno.get("aluno") == "N/A":
                                             dados_aluno = {
@@ -6813,25 +6789,28 @@ if __name__ == "__main__":
                                                 "turma": "N/A",
                                                 "nascimento": "N/A"
                                             }
+
+                                        if not ano_escolar_aluno:
+                                            print("   ❌ Ano escolar não identificado; cartão ignorado")
+                                            itens_status_processados += 1
+                                            continue
                                         
-                                        print(f"   🔍 DEBUG - Dados extraídos: Escola={dados_aluno.get('escola')}, Aluno={dados_aluno.get('aluno')}, Turma={dados_aluno.get('turma')}, Nasc={dados_aluno.get('nascimento')}, Questões={num_questoes_aluno}")
+                                        print(f"   🔍 DEBUG - Dados extraídos: Escola={dados_aluno.get('escola')}, Aluno={dados_aluno.get('aluno')}, Turma={dados_aluno.get('turma')}, Nasc={dados_aluno.get('nascimento')}, Ano={ano_escolar_aluno}, Questões={num_questoes_aluno}")
                                         
-                                        # 🆕 SELECIONAR PASTA DE DESTINO BASEADA NO ANO DETECTADO
-                                        if num_questoes_aluno == 44:
-                                            pasta_destino_atual = DRIVER_FOLDER_5ANO
-                                            print(f"   📁 Destino: Pasta 5° ano (44 questões)")
-                                        else:  # 52 questões
-                                            pasta_destino_atual = DRIVER_FOLDER_9ANO
-                                            print(f"   📁 Destino: Pasta 9° ano (52 questões)")
+                                        pasta_destino_atual = PASTAS_DESTINO_POR_ANO[ano_escolar_aluno]
+                                        print(
+                                            f"   📁 Destino: Pasta {rotulo_ano(ano_escolar_aluno)} "
+                                            f"({num_questoes_aluno} questões)"
+                                        )
                                         
                                         # Detectar respostas (usando número detectado)
                                         respostas_aluno = detectar_respostas_por_tipo(aluno_img, num_questoes=num_questoes_aluno, debug=debug_mode)
                                         questoes_detectadas = sum(1 for r in respostas_aluno if r != '?')
                                         
                                         # 🆕 COMPARAR COM O GABARITO CORRETO
-                                        respostas_gabarito_correto = gabaritos_dict.get(num_questoes_aluno)
+                                        respostas_gabarito_correto = gabaritos_dict.get(ano_escolar_aluno)
                                         if not respostas_gabarito_correto:
-                                            print(f"   ❌ Gabarito de {num_questoes_aluno} questões não disponível!")
+                                            print(f"   ❌ {nome_gabarito(ano_escolar_aluno)} não disponível!")
                                             itens_status_processados += 1
                                             update_status(
                                                 "running",
@@ -6858,14 +6837,20 @@ if __name__ == "__main__":
                                         print(f"{'─'*60}")
                                         
                                         # Enviar para Google Sheets
-                                        if client and PLANILHA_ID:
+                                        if client:
                                             dados_envio = {
                                                 "Escola": dados_aluno.get("escola", "N/A"),
                                                 "Aluno": dados_aluno.get("aluno", "N/A"),
                                                 "Nascimento": dados_aluno.get("nascimento", "N/A"),
                                                 "Turma": dados_aluno.get("turma", "N/A")
                                             }
-                                            enviar_para_planilha(client, dados_envio, resultado, PLANILHA_ID, questoes_detectadas=questoes_detectadas)
+                                            enviar_para_planilha(
+                                                client,
+                                                dados_envio,
+                                                resultado,
+                                                questoes_detectadas=questoes_detectadas,
+                                                ano_escolar=ano_escolar_aluno,
+                                            )
 
                                         enviar_resultado_para_backend(
                                             backend_client=backend_client,
@@ -6877,6 +6862,7 @@ if __name__ == "__main__":
                                             resultado=resultado,
                                             questoes_detectadas=questoes_detectadas,
                                             origem="monitor_drive_imagem",
+                                            ano_escolar=ano_escolar_aluno,
                                         )
                                         itens_status_processados += 1
                                         record_correction(
@@ -6892,7 +6878,8 @@ if __name__ == "__main__":
                                             'nome_sem_ext': nome_sem_ext,
                                             'nome_original': cartao_info['name'],
                                             'pasta_destino': pasta_destino_atual,  # 🆕 Guardar pasta específica
-                                            'num_questoes': num_questoes_aluno  # 🆕 Guardar número de questões
+                                            'num_questoes': num_questoes_aluno,
+                                            'ano_escolar': ano_escolar_aluno,
                                         })
                                         
                                     except Exception as e:
@@ -6904,18 +6891,20 @@ if __name__ == "__main__":
                                             int((itens_status_processados / max(total_status_items, 1)) * 100)
                                         )
                             
-                            # 3. Mover arquivos processados no Drive para pasta correta (5º ou 9º ano)
+                            # 3. Mover arquivos processados para a pasta do ano detectado.
                             if mover_processados and arquivos_processados_agora:
                                 print(f"\n📦 Movendo {len(arquivos_processados_agora)} cartões para pastas de destino...")
                                 
                                 # 🆕 MOVER CADA ARQUIVO PARA SUA PASTA ESPECÍFICA
                                 for arquivo_proc in arquivos_processados_agora:
                                     pasta_destino_arquivo = arquivo_proc.get('pasta_destino')
-                                    num_questoes_arquivo = arquivo_proc.get('num_questoes', 52)
+                                    ano_escolar_arquivo = arquivo_proc.get('ano_escolar')
                                     
                                     if pasta_destino_arquivo:
-                                        ano_str = "5° ano" if num_questoes_arquivo == 44 else "9° ano"
-                                        print(f"   📁 {arquivo_proc['nome_original']} → {ano_str}")
+                                        print(
+                                            f"   📁 {arquivo_proc['nome_original']} → "
+                                            f"{rotulo_ano(ano_escolar_arquivo)}"
+                                        )
                                         
                                         mover_arquivo_no_drive(
                                             drive_service,
@@ -7013,10 +7002,10 @@ if __name__ == "__main__":
     print("\nPara iniciar o sistema, use:")
     print("  python script.py --monitor")
     print("\nO sistema irá:")
-    print("  • Carregar automaticamente os 2 gabaritos (44 e 52 questões)")
+    print("  • Carregar automaticamente os 4 gabaritos por ano escolar")
     print("  • Detectar via IA e OCR o ano de cada aluno")
     print("  • Corrigir usando o gabarito correto")
-    print("  • Enviar para a planilha correta (5° ou 9° ano)")
+    print("  • Enviar para a planilha correta (4°, 5°, 8° ou 9° ano)")
     print("  • Mover para a pasta correta no Drive")
     print("=" * 80)
     

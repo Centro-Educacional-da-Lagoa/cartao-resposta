@@ -2,12 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { BarChart3, LayoutDashboard, Loader2, LogOut, Menu, School2, X } from 'lucide-react';
 import { Dashboard } from './components/Dashboard';
 import { AuthPage } from './components/auth/AuthPage';
-import { api, buscarStatus, type Status, type Usuario } from './service/api';
-
-type Ano = '5' | '9' | 'geral';
+import { api, buscarStatus, type AnoFiltro, type Status, type Usuario } from './service/api';
 
 type NavItem = {
-  valor: Ano;
+  valor: AnoFiltro;
   titulo: string;
   descricao: string;
   Icone: React.ComponentType<{ size?: number; className?: string }>;
@@ -21,9 +19,9 @@ const NAV_ITEMS: NavItem[] = [
     Icone: LayoutDashboard
   },
   {
-    valor: '9',
-    titulo: '9° Ano',
-    descricao: 'Filtra dados e estatisticas para a turma do 9° ano',
+    valor: '4',
+    titulo: '4° Ano',
+    descricao: 'Filtra dados e estatísticas para a turma do 4° ano',
     Icone: School2
   },
   {
@@ -31,13 +29,25 @@ const NAV_ITEMS: NavItem[] = [
     titulo: '5° Ano',
     descricao: 'Filtra dados e estatisticas para a turma do 5° ano',
     Icone: School2
+  },
+  {
+    valor: '8',
+    titulo: '8° Ano',
+    descricao: 'Filtra dados e estatísticas para a turma do 8° ano',
+    Icone: School2
+  },
+  {
+    valor: '9',
+    titulo: '9° Ano',
+    descricao: 'Filtra dados e estatisticas para a turma do 9° ano',
+    Icone: School2
   }
 ];
 
 function App() {
   const [usuario, setUsuario] = useState<Usuario | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [anoSelecionado, setAnoSelecionado] = useState<Ano>('geral');
+  const [anoSelecionado, setAnoSelecionado] = useState<AnoFiltro>('geral');
   const [menuAberto, setMenuAberto] = useState(false);
   const [statusSistema, setStatusSistema] = useState<Status['status']>('idle');
 
@@ -124,7 +134,7 @@ function App() {
     [anoSelecionado]
   );
 
-  const handleSelecionarAno = (ano: Ano) => {
+  const handleSelecionarAno = (ano: AnoFiltro) => {
     setAnoSelecionado(ano);
     setMenuAberto(false);
   };

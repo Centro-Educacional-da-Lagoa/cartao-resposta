@@ -1,8 +1,8 @@
 import { BarChart, Bar, PieChart, Pie, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts';
-import { type Aluno } from '../service/api';
+import { type Aluno, type Ano } from '../service/api';
 
 interface Props {
-    ano: '5' | '9';
+    ano: Ano;
     alunos: Aluno[];
 }
 

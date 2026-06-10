@@ -17,16 +17,21 @@ export class StatusService {
   async getStatus(): Promise<StatusResponse> {
     const googleDriveStatus = {
       configured: this.googleDriveService.isConfigured(),
-      folder_9ano: this.googleDriveService.isConfigured(AnoEscolar.NONO_ANO),
+      folder_4ano: this.googleDriveService.isConfigured(AnoEscolar.QUARTO_ANO),
       folder_5ano: this.googleDriveService.isConfigured(AnoEscolar.QUINTO_ANO),
+      folder_8ano: this.googleDriveService.isConfigured(AnoEscolar.OITAVO_ANO),
+      folder_9ano: this.googleDriveService.isConfigured(AnoEscolar.NONO_ANO),
     };
 
     try {
-      const [totalNonoAno, totalQuintoAno, latest] = await Promise.all([
-        this.alunoService.countByAno(AnoEscolar.NONO_ANO),
-        this.alunoService.countByAno(AnoEscolar.QUINTO_ANO),
-        this.alunoService.findLatest(),
-      ]);
+      const [totalQuartoAno, totalQuintoAno, totalOitavoAno, totalNonoAno, latest] =
+        await Promise.all([
+          this.alunoService.countByAno(AnoEscolar.QUARTO_ANO),
+          this.alunoService.countByAno(AnoEscolar.QUINTO_ANO),
+          this.alunoService.countByAno(AnoEscolar.OITAVO_ANO),
+          this.alunoService.countByAno(AnoEscolar.NONO_ANO),
+          this.alunoService.findLatest(),
+        ]);
 
       return {
         status: 'idle',
@@ -37,8 +42,10 @@ export class StatusService {
         corrigidos_sessao: 0,
         ultima_correcao_sessao: null,
         ultima_atualizacao: latest ? this.alunoService.formatDatePtBr(latest.data) : null,
-        total_registros_9ano: totalNonoAno,
+        total_registros_4ano: totalQuartoAno,
         total_registros_5ano: totalQuintoAno,
+        total_registros_8ano: totalOitavoAno,
+        total_registros_9ano: totalNonoAno,
         database: 'connected',
         google_drive: googleDriveStatus,
       };
@@ -55,8 +62,10 @@ export class StatusService {
       corrigidos_sessao: 0,
       ultima_correcao_sessao: null,
       ultima_atualizacao: null,
-      total_registros_9ano: 0,
+      total_registros_4ano: 0,
       total_registros_5ano: 0,
+      total_registros_8ano: 0,
+      total_registros_9ano: 0,
       database: 'disconnected',
       google_drive: googleDriveStatus,
     };

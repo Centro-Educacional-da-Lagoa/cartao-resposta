@@ -22,13 +22,19 @@ Por padrao a API sobe em `http://localhost:3001`.
 - `POST /api/auth/google`
 - `GET /api/auth/me`
 - `POST /api/auth/logout`
-- `GET /api/aluno/9ano`
+- `GET /api/aluno/4ano`
 - `GET /api/aluno/5ano`
-- `GET /api/estatisticas/9ano`
+- `GET /api/aluno/8ano`
+- `GET /api/aluno/9ano`
+- `GET /api/estatisticas/4ano`
 - `GET /api/estatisticas/5ano`
+- `GET /api/estatisticas/8ano`
+- `GET /api/estatisticas/9ano`
 - `GET /api/estatisticas/geral`
-- `GET /api/pasta/9ano`
+- `GET /api/pasta/4ano`
 - `GET /api/pasta/5ano`
+- `GET /api/pasta/8ano`
+- `GET /api/pasta/9ano`
 - `GET /api/status`
 
 Tambem existem endpoints CRUD para gerenciamento dos resultados:

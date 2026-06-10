@@ -22,14 +22,24 @@ import { UpdateResultadoAlunoDto } from './dto/update-resultado-aluno.dto';
 export class AlunoController {
   constructor(private readonly alunoService: AlunoService) {}
 
-  @Get('9ano')
-  listNonoAno() {
-    return this.alunoService.listByAno(AnoEscolar.NONO_ANO);
+  @Get('4ano')
+  listQuartoAno() {
+    return this.alunoService.listByAno(AnoEscolar.QUARTO_ANO);
   }
 
   @Get('5ano')
   listQuintoAno() {
     return this.alunoService.listByAno(AnoEscolar.QUINTO_ANO);
+  }
+
+  @Get('8ano')
+  listOitavoAno() {
+    return this.alunoService.listByAno(AnoEscolar.OITAVO_ANO);
+  }
+
+  @Get('9ano')
+  listNonoAno() {
+    return this.alunoService.listByAno(AnoEscolar.NONO_ANO);
   }
 
   @Post()

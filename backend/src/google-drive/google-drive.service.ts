@@ -83,20 +83,14 @@ export class GoogleDriveService {
   }
 
   private getFolderId(anoEscolar: AnoEscolar): string | undefined {
-    if (anoEscolar === AnoEscolar.NONO_ANO) {
-      return (
-        this.configService.get<string>('DRIVE_FOLDER_9ANO') ??
-        this.configService.get<string>('DRIVER_FOLDER_9ANO')
-      );
-    }
-
+    const numeroAno = anoEscolar.replace('ano', '');
     return (
-      this.configService.get<string>('DRIVE_FOLDER_5ANO') ??
-      this.configService.get<string>('DRIVER_FOLDER_5ANO')
+      this.configService.get<string>(`DRIVE_FOLDER_${numeroAno}ANO`) ??
+      this.configService.get<string>(`DRIVER_FOLDER_${numeroAno}ANO`)
     );
   }
 
   private formatAno(anoEscolar: AnoEscolar): string {
-    return anoEscolar === AnoEscolar.NONO_ANO ? '9o ano' : '5o ano';
+    return anoEscolar.replace('ano', 'o ano');
   }
 }

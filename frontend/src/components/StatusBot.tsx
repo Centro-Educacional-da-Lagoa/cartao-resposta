@@ -84,8 +84,10 @@ function criarStatusInicial(): Status {
         corrigidos_sessao: carregarCorrigidosSessao(), // 👈 lê do localStorage
         ultima_correcao_sessao: null,
         ultima_atualizacao: null,
+        total_registros_4ano: 0,
         total_registros_9ano: 0,
         total_registros_5ano: 0,
+        total_registros_8ano: 0,
         database: 'disconnected'
     };
 }
@@ -290,7 +292,13 @@ export function StatusBot() {
             </div>
 
             <div className="mt-4 text-sm text-gray-600">
-                <p>Total de cartões processados: {(status.total_registros_5ano ?? 0) + (status.total_registros_9ano ?? 0)}</p>
+                <p>
+                    Total de cartões processados:{' '}
+                    {(status.total_registros_4ano ?? 0)
+                        + (status.total_registros_5ano ?? 0)
+                        + (status.total_registros_8ano ?? 0)
+                        + (status.total_registros_9ano ?? 0)}
+                </p>
                 <p className="text-xs text-gray-500 mt-1">Hora ao vivo: {formatarData(status.timestamp)}</p>
             </div>
 

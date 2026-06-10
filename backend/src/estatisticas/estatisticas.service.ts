@@ -24,9 +24,11 @@ export class EstatisticasService {
   }
 
   async getGeral(): Promise<EstatisticasGeralResponse> {
-    const [geral, quintoAno, nonoAno] = await Promise.all([
+    const [geral, quartoAno, quintoAno, oitavoAno, nonoAno] = await Promise.all([
       this.calcular(),
+      this.calcular(AnoEscolar.QUARTO_ANO),
       this.calcular(AnoEscolar.QUINTO_ANO),
+      this.calcular(AnoEscolar.OITAVO_ANO),
       this.calcular(AnoEscolar.NONO_ANO),
     ]);
 
@@ -34,7 +36,9 @@ export class EstatisticasService {
       status: 'success',
       ...geral,
       por_ano: {
+        [AnoEscolar.QUARTO_ANO]: quartoAno,
         [AnoEscolar.QUINTO_ANO]: quintoAno,
+        [AnoEscolar.OITAVO_ANO]: oitavoAno,
         [AnoEscolar.NONO_ANO]: nonoAno,
       },
     };

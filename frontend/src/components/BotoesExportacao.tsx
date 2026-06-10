@@ -2,7 +2,7 @@ import { useRef, useState, type ChangeEvent } from 'react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
-import { api, type Aluno } from '../service/api';
+import { api, type Aluno, type AnoFiltro } from '../service/api';
 import { FileText, FileSpreadsheet, Upload } from 'lucide-react';
 
 const TIPOS_PERMITIDOS = new Set(['application/pdf', 'image/png', 'image/jpeg']);
@@ -15,7 +15,7 @@ type UploadFeedback = {
 
 interface Props {
     alunos: Aluno[];
-    ano: '5' | '9' | 'geral';
+    ano: AnoFiltro;
 }
 
 export function BotoesExportacao({ alunos, ano }: Props) {

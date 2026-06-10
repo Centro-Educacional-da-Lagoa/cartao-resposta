@@ -39,7 +39,9 @@ export class AlunoService {
   }
 
   async findOne(id: string): Promise<ResultadoAlunoResponse> {
-    const resultado = await this.prisma.resultadoAluno.findUnique({ where: { id } });
+    const resultado = await this.prisma.resultadoAluno.findUnique({
+      where: { id },
+    });
 
     if (!resultado) {
       throw new NotFoundException('Resultado do aluno não encontrado');
@@ -120,7 +122,14 @@ export class AlunoService {
   }
 
   formatAno(anoEscolar: AnoEscolar): string {
-    return anoEscolar === AnoEscolar.NONO_ANO ? '9º Ano' : '5º Ano';
+    const rotulos: Record<AnoEscolar, string> = {
+      [AnoEscolar.QUARTO_ANO]: '4º Ano',
+      [AnoEscolar.QUINTO_ANO]: '5º Ano',
+      [AnoEscolar.OITAVO_ANO]: '8º Ano',
+      [AnoEscolar.NONO_ANO]: '9º Ano',
+    };
+
+    return rotulos[anoEscolar];
   }
 
   formatDatePtBr(value: Date | string): string {

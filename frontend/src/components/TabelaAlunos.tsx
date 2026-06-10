@@ -1,11 +1,11 @@
-import { type Aluno } from '../service/api';
+import { type Aluno, type AnoFiltro } from '../service/api';
 import { BotoesExportacao } from './BotoesExportacao';
 import { useMemo, useState } from 'react';
 import { Search } from 'lucide-react';
 
 interface Props {
     alunos: Aluno[];
-    ano: '5' | '9' | 'geral';
+    ano: AnoFiltro;
 }
 
 interface FiltrosData {

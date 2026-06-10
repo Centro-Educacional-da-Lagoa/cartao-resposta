@@ -58,7 +58,7 @@ Componente central que gerencia o estado da aplicação e coordena todos os subc
 - Distribui dados para componentes filhos
 
 **Props:**
-- `ano`: '5' | '9' | 'geral' - Define qual conjunto de dados exibir
+- `ano`: '4' | '5' | '8' | '9' | 'geral' - Define qual conjunto de dados exibir
 
 ### 📈 CardsEstatisticas
 Exibe cards com estatísticas principais em formato visual atraente.
@@ -207,22 +207,22 @@ api.getStatus()
 // GET /api/status
 
 // Alunos do 9º ano
-api.getAlunos9Ano()
+api.getAlunos('9')
 // GET /api/aluno/9ano
 // Retorna: { alunos: Aluno[] }
 
 // Alunos do 5º ano
-api.getAlunos5ano()
+api.getAlunos('5')
 // GET /api/aluno/5ano
 // Retorna: { alunos: Aluno[] }
 
 // Estatísticas do 9º ano
-api.getEstatisticas9Ano()
+api.getEstatisticas('9')
 // GET /api/estatisticas/9ano
 // Retorna: Estatisticas
 
 // Estatísticas do 5º ano
-api.getEstatisticas5Ano()
+api.getEstatisticas('5')
 // GET /api/estatisticas/5ano
 // Retorna: Estatisticas
 

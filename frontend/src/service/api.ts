@@ -3,6 +3,10 @@ import axios from 'axios';
 const DATA_API_URL = import.meta.env.VITE_DATA_API_URL || "http://localhost:3001";
 const BOT_API_URL = import.meta.env.VITE_BOT_API_URL || "http://localhost:5000";
 
+export const ANOS = ['4', '5', '8', '9'] as const;
+export type Ano = typeof ANOS[number];
+export type AnoFiltro = Ano | 'geral';
+
 console.log('🔗 DATA_API_URL configurada:', DATA_API_URL + '/api/status');
 console.log('🤖 BOT_API_URL configurada:', BOT_API_URL);
 
@@ -43,8 +47,10 @@ export interface Status {
     corrigidos_sessao: number;
     ultima_correcao_sessao: string | null;
     ultima_atualizacao: string | null;
+    total_registros_4ano: number;
     total_registros_9ano: number;
     total_registros_5ano: number;
+    total_registros_8ano: number;
     database: 'connected' | 'disconnected';
 }
 
@@ -159,23 +165,13 @@ export const api = {
         return response.data;
     },
 
-    async getAlunos9Ano() {
-        const response = await axios.get(`${DATA_API_URL}/api/aluno/9ano`);
+    async getAlunos(ano: Ano) {
+        const response = await axios.get(`${DATA_API_URL}/api/aluno/${ano}ano`);
         return response.data
     },
 
-    async getAlunos5ano() {
-        const response = await axios.get(`${DATA_API_URL}/api/aluno/5ano`);
-        return response.data
-    },
-
-    async getEstatisticas9Ano(): Promise<Estatisticas> {
-        const response = await axios.get(`${DATA_API_URL}/api/estatisticas/9ano`);
-        return response.data
-    },
-
-    async getEstatisticas5Ano(): Promise<Estatisticas> {
-        const response = await axios.get(`${DATA_API_URL}/api/estatisticas/5ano`);
+    async getEstatisticas(ano: Ano): Promise<Estatisticas> {
+        const response = await axios.get(`${DATA_API_URL}/api/estatisticas/${ano}ano`);
         return response.data
     },
 
@@ -184,13 +180,8 @@ export const api = {
         return response.data
     },
 
-    async getPasta9Ano(): Promise<PastaResponse> {
-        const response = await axios.get(`${DATA_API_URL}/api/pasta/9ano`);
-        return response.data
-    },
-
-    async getPasta5Ano(): Promise<PastaResponse> {
-        const response = await axios.get(`${DATA_API_URL}/api/pasta/5ano`);
+    async getPasta(ano: Ano): Promise<PastaResponse> {
+        const response = await axios.get(`${DATA_API_URL}/api/pasta/${ano}ano`);
         return response.data
     },
 

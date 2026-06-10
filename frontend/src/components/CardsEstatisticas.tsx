@@ -1,9 +1,9 @@
 import { useMemo } from 'react';
-import { type Aluno } from '../service/api';
+import { type Aluno, type Ano } from '../service/api';
 import { Users, TrendingUp, Award, AlertCircle } from 'lucide-react';
 
 interface Props {
-    ano: '5' | '9';
+    ano: Ano;
     alunos: Aluno[];
 }
 

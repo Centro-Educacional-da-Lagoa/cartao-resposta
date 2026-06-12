@@ -5,8 +5,7 @@ import * as XLSX from 'xlsx';
 import { api, type Aluno, type AnoFiltro } from '../service/api';
 import { FileText, FileSpreadsheet, Upload } from 'lucide-react';
 
-const TIPOS_PERMITIDOS = new Set(['application/pdf', 'image/png', 'image/jpeg']);
-const EXTENSOES_PERMITIDAS = new Set(['pdf', 'png', 'jpg', 'jpeg']);
+const TIPO_PDF = 'application/pdf';
 
 type UploadFeedback = {
     tipo: 'sucesso' | 'erro';
@@ -158,11 +157,7 @@ export function BotoesExportacao({ alunos, ano }: Props) {
 
     const arquivoValido = (arquivo: File) => {
         const extensao = arquivo.name.split('.').pop()?.toLowerCase();
-        if (!extensao || !EXTENSOES_PERMITIDAS.has(extensao)) {
-            return false;
-        }
-
-        return arquivo.type === '' || TIPOS_PERMITIDOS.has(arquivo.type);
+        return extensao === 'pdf' && (arquivo.type === '' || arquivo.type === TIPO_PDF);
     };
 
     const enviarArquivo = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -176,7 +171,7 @@ export function BotoesExportacao({ alunos, ano }: Props) {
         if (!arquivoValido(arquivo)) {
             setFeedbackUpload({
                 tipo: 'erro',
-                mensagem: 'Formato invalido. Selecione um arquivo PDF, PNG ou JPG.'
+                mensagem: 'Formato inválido. Selecione um arquivo PDF.'
             });
             event.target.value = '';
             return;
@@ -192,7 +187,6 @@ export function BotoesExportacao({ alunos, ano }: Props) {
                         ? resposta.message
                         : `Arquivo ${arquivo.name} enviado com sucesso.`
             });
-            window.dispatchEvent(new Event('bot:leitura-finalizada'));
         } catch (error) {
             console.error('Erro ao enviar arquivo:', error);
             setFeedbackUpload({
@@ -210,7 +204,7 @@ export function BotoesExportacao({ alunos, ano }: Props) {
             <input
                 ref={inputArquivoRef}
                 type="file"
-                accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
+                accept=".pdf,application/pdf"
                 onChange={enviarArquivo}
                 className="hidden"
             />
@@ -248,7 +242,7 @@ export function BotoesExportacao({ alunos, ano }: Props) {
                     className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-amber-500 to-orange-600 text-white rounded-lg font-medium text-sm shadow-sm hover:shadow-md hover:-translate-y-0.5 active:translate-y-0 transition-all disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
                 >
                     <Upload size={18} />
-                    {enviandoArquivo ? 'Enviando...' : 'Enviar Arquivo'}
+                    {enviandoArquivo ? 'Enviando PDF...' : 'Enviar PDF'}
                 </button>
             </div>
 

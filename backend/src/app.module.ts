@@ -3,9 +3,9 @@ import { ConfigModule } from '@nestjs/config';
 import { AlunoModule } from './aluno/aluno.module';
 import { AuthModule } from './auth/auth.module';
 import { EstatisticasModule } from './estatisticas/estatisticas.module';
-import { GoogleDriveModule } from './google-drive/google-drive.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { StatusModule } from './status/status.module';
+import { VultrS3Module } from './vultr-s3/vultr-s3.module';
 
 @Module({
   imports: [
@@ -17,7 +17,7 @@ import { StatusModule } from './status/status.module';
     AuthModule,
     AlunoModule,
     EstatisticasModule,
-    GoogleDriveModule,
+    VultrS3Module,
     StatusModule,
   ],
 })

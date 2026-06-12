@@ -12,11 +12,7 @@ export type StatusResponse = {
   total_registros_8ano: number;
   total_registros_9ano: number;
   database: 'connected' | 'disconnected';
-  google_drive: {
+  vultr_s3: {
     configured: boolean;
-    folder_4ano: boolean;
-    folder_5ano: boolean;
-    folder_8ano: boolean;
-    folder_9ano: boolean;
   };
 };

@@ -52,9 +52,12 @@ export interface Status {
     total_registros_5ano: number;
     total_registros_8ano: number;
     database: 'connected' | 'disconnected';
+    vultr_s3?: {
+        configured: boolean;
+    };
 }
 
-export interface ArquivoDrive {
+export interface ArquivoStorage {
     id: string;
     name: string;
     mimeType: string;
@@ -76,7 +79,7 @@ export interface PastaResponse {
     pasta: string;
     descricao: string;
     total_registros: number;
-    arquivos: ArquivoDrive[];
+    arquivos: ArquivoStorage[];
 }
 
 export interface UploadResponse {
@@ -189,7 +192,7 @@ export const api = {
         const formData = new FormData();
         formData.append('arquivo', arquivo);
 
-        const response = await axios.post(`${BOT_API_URL}/api/upload`, formData);
+        const response = await axios.post(`${DATA_API_URL}/api/upload`, formData);
         return response.data;
     },
 }

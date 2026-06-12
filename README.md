@@ -8,7 +8,7 @@
 - 🤖 **Extração de cabeçalho** com Google Gemini AI
 - 📊 **Integração com Google Sheets** para armazenamento automático
 - 🗄️ **Integração com backend NestJS + Prisma + SQL Server** para persistência oficial
-- ☁️ **Sincronização com Google Drive** (download automático da pasta configurada)
+- ☁️ **Integração com Vultr Object Storage (S3)** para upload e consumo automático
 - 🎯 **Alta precisão** na detecção de respostas marcadas
 - 📁 **Processamento em lote** de múltiplos alunos
 - 🔄 **Rate limiting** integrado para APIs
@@ -20,7 +20,7 @@
 
 ## 🎯 Como Funciona
 
-0. **Download**: Baixa gabarito e cartões direto de uma pasta do Google Drive
+0. **Download**: Baixa gabaritos e cartões diretamente do Vultr S3
 1. **Processamento**: Extrai respostas usando visão computacional e clustering
 2. **Cabeçalho**: Usa Google Gemini para extrair dados do aluno (nome, escola, turma, nascimento)
 3. **Correção**: Compara respostas do aluno com o gabarito
@@ -71,27 +71,25 @@ pip install -r requirements.txt
 
 ## ⚙️ Configuração
 
-### 1: CONFIGURAR GOOGLE CLOUD, API's, CONTA DE SERVIÇO E CREDENCIAIS_GOOGLE.JSON
+### 1: Configurar Google Cloud para Sheets e Gemini
 - Acesse https://console.cloud.google.com/
 - Criar um novo projeto
-- Ativar API's do Google Sheets, Google Drive e Gemini for Google Cloud API
+- Ativar as APIs do Google Sheets, Google Drive (escopo usado pelo gspread) e Gemini
 - Criar uma credencial de conta de serviços
 - Marca a caixa do email criado e clicar em "Contas de Serviço"
 - Criar uma nova chave JSON
 - Irá baixar o arquivo.json, renoemar para ccredenciais_google.json e colocar dentro da pasta raiz
 
 ### 2. Criar o arquivo .env e configurar com os seguintes nomes:
-   GEMINI_API_KEY="Sua_key_aqui"
-   GOOGLE_SHEETS_4ANO="Sua_key_aqui"
-   GOOGLE_SHEETS_5ANO="Sua_key_aqui"
-   GOOGLE_SHEETS_8ANO="Sua_key_aqui"
-   GOOGLE_SHEETS_9ANO="Sua_key_aqui"
-   DRIVER_FOLDER_ID="Sua_key_aqui"
-   DRIVER_FOLDER_4ANO="Sua_key_aqui"
-   DRIVER_FOLDER_5ANO="Sua_key_aqui"
-   DRIVER_FOLDER_8ANO="Sua_key_aqui"
-   DRIVER_FOLDER_9ANO="Sua_key_aqui"
-   GOOGLE_CREDENTIALS_JSON='{"type":"service_account","project_id":"...","private_key_id":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n","client_email":"...","client_id":"...","auth_uri":"...","token_uri":"...","auth_provider_x509_cert_url":"...","client_x509_cert_url":"...", "universe_domain":"googleapis.com"}'
+
+```env
+GEMINI_API_KEY="Sua_key_aqui"
+GOOGLE_SHEETS_4ANO="Sua_key_aqui"
+GOOGLE_SHEETS_5ANO="Sua_key_aqui"
+GOOGLE_SHEETS_8ANO="Sua_key_aqui"
+GOOGLE_SHEETS_9ANO="Sua_key_aqui"
+GOOGLE_CREDENTIALS_JSON='{"type":"service_account","project_id":"...","private_key_id":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n","client_email":"...","client_id":"...","auth_uri":"...","token_uri":"...","auth_provider_x509_cert_url":"...","client_x509_cert_url":"...", "universe_domain":"googleapis.com"}'
+```
 
 ### 3. (Opcional) Sincronizar com o banco via backend NestJS
 
@@ -131,10 +129,57 @@ O backend grava os usuarios na tabela `usuarios` com `id`, `nome`, `email`, `sen
 
 
 
-### 2. Google Drive e Google Sheets API
+### Vultr Object Storage (S3)
+
+Configure as credenciais já criadas e, opcionalmente, os prefixos usados pelo fluxo:
+
+```env
+VULTR_S3_ACCESS_KEY_ID=sua-access-key
+VULTR_S3_SECRET_ACCESS_KEY=sua-secret-key
+VULTR_S3_HOST=seu-endpoint.vultrobjects.com
+VULTR_S3_BUCKET=seu-bucket
+VULTR_S3_REGION=ewr1
+
+VULTR_S3_PREFIX_UPLOAD=entrada
+VULTR_S3_PREFIX_GABARITOS=gabaritos
+VULTR_S3_PREFIX_PROCESSADOS=processados
+```
+
+Os quatro gabaritos devem permanecer no bucket com os nomes:
+
+- `gabaritos/gabarito_4ano.png`
+- `gabaritos/gabarito_5ano.png`
+- `gabaritos/gabarito_8ano.png`
+- `gabaritos/gabarito_9ano.png`
+
+Para copiar uma única vez os gabaritos da pasta antiga do Drive:
+
+```bash
+python migrar_gabaritos_drive_para_s3.py --dry-run
+python migrar_gabaritos_drive_para_s3.py
+```
+
+O frontend envia PDFs para `entrada/<id>/<nome>.pdf`. Após a correção, o bot move
+o objeto para `processados/<ano>/<id>/<nome>.pdf`, mantendo todo o pipeline de
+OCR, OMR, Gemini, comparação e persistência já existente.
+
+O monitor também continua lendo a pasta configurada em `DRIVER_FOLDER_ID`.
+Assim, existem duas formas simultâneas de entrada:
+
+- botão **Enviar PDF**: grava no Vultr S3;
+- arquivo colocado manualmente na pasta do Google Drive: processa e depois move
+  para `DRIVER_FOLDER_4ANO`, `DRIVER_FOLDER_5ANO`, `DRIVER_FOLDER_8ANO` ou
+  `DRIVER_FOLDER_9ANO`, conforme o ano detectado.
+
+Por padrão, ambas ficam ativas. Para limitar as origens:
+
+```env
+BOT_INPUT_SOURCES=vultr_s3,google_drive
+```
+
+### Google Sheets API
 
 Siga as instruções em [`INSTRUCOES_GOOGLE_SHEETS.md`](INSTRUCOES_GOOGLE_SHEETS.md) para:
-- Configurar o Google Drive
 - Configurar as Planilhas
 
 OBS: Verifque o cabeçalho das planilhas, está disponível dentro do README INSTRUCOES_GOOGLE_SHEETS
@@ -247,7 +292,7 @@ Para conectar pelo SQL Server Management Studio:
 
 Se o container do SQL Server sair com `code 137`, o Docker/WSL matou o processo por memória. O Compose já limita o SQL Server com `MSSQL_MEMORY_LIMIT_MB=1024`; se ainda falhar, aumente a memória disponível do Docker/WSL ou use um SQL Server externo com `DB_HOST`, `DB_USERNAME` e `DB_PASSWORD`.
 
-### Modo monitor para ler de forma contínua e automática os gabaritos e cartões-resposta dentro da pasta
+### Modo monitor para ler continuamente os PDFs enviados ao Vultr S3
 
 OBS: No modo Monitor, o sistema cria automaticamente o arquivo historico_monitoramento.json. Nesse arquivo são salvos os IDs de todos os cartões que já foram lidos, garantindo que o bot não leia o mesmo cartão mais de uma vez.
 

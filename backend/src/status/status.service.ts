@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 
 import { AnoEscolar } from '../aluno/ano-escolar.enum';
 import { AlunoService } from '../aluno/aluno.service';
-import { GoogleDriveService } from '../google-drive/google-drive.service';
+import { VultrS3Service } from '../vultr-s3/vultr-s3.service';
 import { StatusResponse } from './status.types';
 
 @Injectable()
@@ -11,16 +11,12 @@ export class StatusService {
 
   constructor(
     private readonly alunoService: AlunoService,
-    private readonly googleDriveService: GoogleDriveService,
+    private readonly vultrS3Service: VultrS3Service,
   ) {}
 
   async getStatus(): Promise<StatusResponse> {
-    const googleDriveStatus = {
-      configured: this.googleDriveService.isConfigured(),
-      folder_4ano: this.googleDriveService.isConfigured(AnoEscolar.QUARTO_ANO),
-      folder_5ano: this.googleDriveService.isConfigured(AnoEscolar.QUINTO_ANO),
-      folder_8ano: this.googleDriveService.isConfigured(AnoEscolar.OITAVO_ANO),
-      folder_9ano: this.googleDriveService.isConfigured(AnoEscolar.NONO_ANO),
+    const vultrS3Status = {
+      configured: this.vultrS3Service.isConfigured(),
     };
 
     try {
@@ -47,7 +43,7 @@ export class StatusService {
         total_registros_8ano: totalOitavoAno,
         total_registros_9ano: totalNonoAno,
         database: 'connected',
-        google_drive: googleDriveStatus,
+        vultr_s3: vultrS3Status,
       };
     } catch (error) {
       this.logger.warn(`Status do banco indisponivel: ${this.getErrorMessage(error)}`);
@@ -67,7 +63,7 @@ export class StatusService {
       total_registros_8ano: 0,
       total_registros_9ano: 0,
       database: 'disconnected',
-      google_drive: googleDriveStatus,
+      vultr_s3: vultrS3Status,
     };
   }
 

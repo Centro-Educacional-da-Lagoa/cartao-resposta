@@ -56,6 +56,16 @@ except ImportError:
     create_backend_sync_client_from_env = None
 
 try:
+    from storage_vultr import VultrS3Storage
+except ImportError:
+    VultrS3Storage = None
+
+try:
+    from storage_google_drive import GoogleDriveStorage
+except ImportError:
+    GoogleDriveStorage = None
+
+try:
     from state import log as registrar_status_log
     from state import record_correction, reset_session, update_status
 except ImportError:
@@ -230,14 +240,10 @@ def _payload_resultado_aluno_backend(
 
 def enviar_resultado_para_backend(
     backend_client,
-    drive_file_id: str,
     file_name: str,
     dados_aluno: Dict[str, str],
     respostas_aluno: List[str],
-    respostas_gabarito: List[str],
     resultado: Dict,
-    questoes_detectadas: int,
-    origem: str,
     ano_escolar: str,
 ) -> bool:
     if not backend_client:
@@ -3350,6 +3356,57 @@ def carregar_gabaritos_do_drive(
     return gabaritos
 
 
+def carregar_gabaritos_do_s3(
+    storage,
+    pasta_temporaria: str,
+    debug: bool = False,
+) -> dict:
+    """Baixa do Vultr S3 e processa os quatro gabaritos exigidos pelo pipeline."""
+    arquivos = storage.listar_gabaritos()
+    arquivos_por_nome = {
+        arquivo.get("name", "").lower(): arquivo
+        for arquivo in arquivos
+    }
+    gabaritos = {}
+
+    for ano_escolar in ANOS_ESCOLARES:
+        nome_base = nome_gabarito(ano_escolar)
+        arquivo_info = next(
+            (
+                arquivos_por_nome.get(f"{nome_base}{extensao}")
+                for extensao in (".png", ".jpg", ".jpeg")
+                if arquivos_por_nome.get(f"{nome_base}{extensao}")
+            ),
+            None,
+        )
+        if not arquivo_info:
+            print(f"❌ {nome_base}.png/.jpg/.jpeg não encontrado no Vultr S3")
+            continue
+
+        num_questoes = QUESTOES_POR_ANO[ano_escolar]
+        print(
+            f"✅ {arquivo_info['name']}: "
+            f"{rotulo_ano(ano_escolar)} ({num_questoes} questões)"
+        )
+        caminho = os.path.join(pasta_temporaria, arquivo_info["name"])
+        storage.baixar(arquivo_info["key"], caminho)
+
+        imagem = preprocessar_arquivo(caminho, nome_base, debug=debug)
+        respostas = detectar_respostas_por_tipo(
+            imagem,
+            num_questoes=num_questoes,
+            debug=debug,
+            eh_gabarito=True,
+        )
+        gabaritos[ano_escolar] = respostas
+        print(
+            f"   ✓ Questões processadas: "
+            f"{sum(1 for resposta in respostas if resposta != '?')}/{num_questoes}"
+        )
+
+    return gabaritos
+
+
 def processar_cartoes_automatizado(
     diretorio: str,
     gabaritos: dict,
@@ -5971,14 +6028,14 @@ def processar_pdf_multiplas_paginas(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Sistema automatizado de correção de cartões resposta com Google Drive e Google Sheets."
+        description="Sistema automatizado de correção de cartões resposta com Vultr S3 e Google Sheets."
     )
 
     parser.add_argument(
-        "--drive-folder",
-        dest="drive_folder_custom",
+        "--s3-prefix",
+        dest="s3_prefix_custom",
         default=None,
-        help="ID CUSTOMIZADO da pasta do Google Drive (opcional - sobrescreve as pastas padrão)"
+        help="Prefixo customizado de entrada no bucket S3 (opcional)"
     )
     parser.add_argument(
         "--gabarito",
@@ -6081,38 +6138,58 @@ if __name__ == "__main__":
     print(f"🧭 Correção de perspectiva: {'ATIVADA' if PERSPECTIVA_HABILITADA else 'DESATIVADA (--no-perspectiva)'}")
     print("=" * 80)
 
-    # 👉 Carregar IDs das pastas do Google Drive do arquivo .env
-    DRIVER_FOLDER_UPLOAD = os.getenv("DRIVER_FOLDER_ID") or os.getenv("DRIVE_FOLDER_ID")
-    PASTAS_DESTINO_POR_ANO = {
-        ano_escolar: (
-            os.getenv(f"DRIVER_FOLDER_{NUMERO_POR_ANO[ano_escolar]}ANO")
-            or os.getenv(f"DRIVE_FOLDER_{NUMERO_POR_ANO[ano_escolar]}ANO")
-        )
-        for ano_escolar in ANOS_ESCOLARES
-    }
-    
-    # Validar se as variáveis foram carregadas
-    if not DRIVER_FOLDER_UPLOAD or any(not pasta for pasta in PASTAS_DESTINO_POR_ANO.values()):
-        print("❌ ERRO: Variáveis de ambiente não configuradas no .env!")
-        print(
-            "   Configure DRIVER_FOLDER_ID e DRIVER_FOLDER_4ANO, "
-            "DRIVER_FOLDER_5ANO, DRIVER_FOLDER_8ANO, DRIVER_FOLDER_9ANO."
-        )
+    if not VultrS3Storage:
+        print("❌ ERRO: boto3 não está instalado. Execute: pip install -r requirements.txt")
         exit(1)
-    
-    # Sempre usa a pasta de UPLOAD como origem
-    if args.drive_folder_custom:
-        # Usar pasta customizada se fornecida
-        pasta_drive_id = args.drive_folder_custom
-        print(f"📁 Usando pasta customizada do Drive: {pasta_drive_id}")
-    else:
-        pasta_drive_id = DRIVER_FOLDER_UPLOAD
-    
-    # 🆕 Pastas de destino serão escolhidas AUTOMATICAMENTE por aluno
-    # Com base no ano detectado na turma
-    print(f"\n📁 Pastas de destino configuradas:")
-    for ano_escolar in ANOS_ESCOLARES:
-        print(f"   • {rotulo_ano(ano_escolar)} → {PASTAS_DESTINO_POR_ANO[ano_escolar]}")
+
+    try:
+        storage_s3 = VultrS3Storage.from_env()
+    except Exception as e:
+        print(f"❌ ERRO: Não foi possível configurar o Vultr S3: {e}")
+        exit(1)
+
+    if args.s3_prefix_custom:
+        prefixo_custom = args.s3_prefix_custom.strip().strip("/")
+        storage_s3.config.prefixo_upload = f"{prefixo_custom}/" if prefixo_custom else ""
+
+    origens_configuradas = {
+        origem.strip().lower()
+        for origem in os.getenv(
+            "BOT_INPUT_SOURCES",
+            "vultr_s3,google_drive",
+        ).split(",")
+        if origem.strip()
+    }
+    storages_entrada = {}
+
+    if "vultr_s3" in origens_configuradas:
+        storages_entrada[storage_s3.source_name] = storage_s3
+
+    if "google_drive" in origens_configuradas:
+        if not GoogleDriveStorage:
+            print("⚠️ Entrada Google Drive desativada: adaptador indisponível")
+        else:
+            try:
+                storage_drive = GoogleDriveStorage.from_env()
+                storages_entrada[storage_drive.source_name] = storage_drive
+            except Exception as e:
+                print(f"⚠️ Entrada Google Drive desativada: {e}")
+
+    if not storages_entrada:
+        print("❌ ERRO: Nenhuma origem de cartões foi configurada")
+        exit(1)
+
+    print(f"\n🪣 Bucket Vultr S3: {storage_s3.config.bucket}")
+    print(f"📥 Prefixo de entrada: {storage_s3.config.prefixo_upload or '(raiz)'}")
+    print(f"📚 Prefixo de gabaritos: {storage_s3.config.prefixo_gabaritos or '(raiz)'}")
+    print("📡 Origens de cartões ativas:")
+    for nome_origem, storage in storages_entrada.items():
+        print(f"   • {nome_origem}")
+        for ano_escolar in ANOS_ESCOLARES:
+            print(
+                f"      {rotulo_ano(ano_escolar)} → "
+                f"{storage.destino_label(ano_escolar)}"
+            )
     print("=" * 80)
 
     # 🆕 MODO ESPECIAL: PDF COM MÚLTIPLAS PÁGINAS
@@ -6141,7 +6218,7 @@ if __name__ == "__main__":
         # ⚠️ Modo PDF múltiplo precisa ser atualizado para sistema automatizado
         print(f"\n❌ ERRO: Modo --pdf-multiplo ainda não foi adaptado para o sistema automatizado")
         print(f"   Use o modo --monitor para processar PDFs automaticamente")
-        print(f"   Coloque o PDF na pasta de upload do Google Drive")
+        print(f"   Envie o PDF para o prefixo de entrada do Vultr S3")
         exit(1)
         
         if resultados:
@@ -6163,14 +6240,9 @@ if __name__ == "__main__":
         print("=" * 60)
         print("🤖 MODO MONITORAMENTO CONTÍNUO ATIVADO - SISTEMA AUTOMATIZADO")
         print(f"⏰ Intervalo: {args.intervalo} minutos")
-        print(f"📂 Pasta de ORIGEM (upload): {pasta_drive_id}")
-        print(f"📁 Pastas de DESTINO:")
-        for ano_escolar in ANOS_ESCOLARES:
-            print(
-                f"   • {rotulo_ano(ano_escolar)} "
-                f"({QUESTOES_POR_ANO[ano_escolar]} questões) → "
-                f"{PASTAS_DESTINO_POR_ANO[ano_escolar]}"
-            )
+        print(f"🪣 Bucket: {storage_s3.config.bucket}")
+        print(f"📂 Prefixo de ORIGEM (upload): {storage_s3.config.prefixo_upload or '(raiz)'}")
+        print(f"📡 Origens monitoradas: {', '.join(storages_entrada)}")
         print(f"🗄️ Sync Banco: {'ATIVADO' if backend_client else 'DESATIVADO'}")
         print("✨ Sistema detectará automaticamente o ano de cada cartão")
         print("💡 Pressione Ctrl+C para parar")
@@ -6220,30 +6292,36 @@ if __name__ == "__main__":
         def verificar_novos_arquivos():
             """Verifica se há NOVOS arquivos para processar (por ID e NOME)"""
             try:
-                # Configurar Google Drive
-                drive_service = configurar_google_drive_service_completo()
-                if not drive_service:
-                    print("❌ Erro ao conectar com Google Drive")
-                    return [], {'ids': set(), 'nomes': set()}
-                
-                # Listar arquivos na pasta
-                query = f"'{pasta_drive_id}' in parents and trashed = false"
-                results = drive_service.files().list(
-                    q=query,
-                    fields="files(id, name, mimeType, modifiedTime)",
-                    pageSize=100
-                ).execute()
-                
-                arquivos = results.get('files', [])
+                arquivos = []
+                for nome_origem, storage in storages_entrada.items():
+                    try:
+                        arquivos_origem = storage.listar_uploads()
+                        cartoes_origem = [
+                            arquivo
+                            for arquivo in arquivos_origem
+                            if arquivo["name"].lower().endswith(
+                                (".pdf", ".png", ".jpg", ".jpeg")
+                            )
+                            and "gabarito" not in arquivo["name"].lower()
+                        ]
+                        arquivos.extend(cartoes_origem)
+                        print(
+                            f"\n📂 Cartões em {nome_origem}: "
+                            f"{len(cartoes_origem)}"
+                        )
+                    except Exception as e:
+                        print(f"⚠️ Falha ao consultar {nome_origem}: {e}")
+
+                gabaritos_s3 = storage_s3.listar_gabaritos()
                 historico = carregar_historico()
                 ids_processados = historico['ids']
                 nomes_processados = historico['nomes']
                 
                 # 🆕 DEBUG: Mostrar TODOS os arquivos encontrados
-                print(f"\n📂 Arquivos na pasta do Drive: {len(arquivos)}")
                 for arq in arquivos:
                     nome = arq['name']
                     arquivo_id = arq['id']
+                    origem = arq['source']
                     nome_sem_ext = os.path.splitext(nome)[0].lower()
                     
                     # Verificar duplicata por ID ou NOME
@@ -6252,24 +6330,21 @@ if __name__ == "__main__":
                     
                     if ja_processado_id or ja_processado_nome:
                         motivo = "ID" if ja_processado_id else "NOME"
-                        print(f"   ✅ PROCESSADO ({motivo}) | {nome}")
+                        print(f"   ✅ PROCESSADO ({motivo}) | [{origem}] {nome}")
                     else:
-                        print(f"   🆕 NOVO | {nome}")
+                        print(f"   🆕 NOVO | [{origem}] {nome}")
                 
                 novos_cartoes = []
-                tem_gabarito = False
+                tem_gabarito = bool(gabaritos_s3)
+
+                for gabarito in gabaritos_s3:
+                    print(f"📋 Gabarito detectado: {gabarito['name']}")
                 
                 for arquivo in arquivos:
                     arquivo_id = arquivo['id']
                     nome = arquivo['name']
                     nome_lower = nome.lower()
                     nome_sem_ext = os.path.splitext(nome)[0].lower()
-                    
-                    # Verificar se é o gabarito (nunca marcar como processado)
-                    if 'gabarito' in nome_lower and any(ext in nome_lower for ext in ['.pdf', '.png', '.jpg', '.jpeg']):
-                        tem_gabarito = True
-                        print(f"📋 Gabarito detectado: {nome}")
-                        continue
                     
                     # Verificar se é um cartão de aluno NOVO (por ID E NOME)
                     if any(ext in nome_lower for ext in ['.pdf', '.png', '.jpg', '.jpeg']):
@@ -6286,11 +6361,14 @@ if __name__ == "__main__":
                         
                         # É NOVO!
                         tipo = "📄 PDF" if nome_lower.endswith('.pdf') else "🖼️ Imagem"
-                        print(f"   {tipo} NOVO detectado: {nome}")
+                        print(
+                            f"   {tipo} NOVO detectado em "
+                            f"{arquivo['source']}: {nome}"
+                        )
                         novos_cartoes.append(arquivo)
                 
                 if not tem_gabarito and novos_cartoes:
-                    print("⚠️ Novos cartões encontrados mas GABARITO não está na pasta!")
+                    print("⚠️ Novos cartões encontrados mas GABARITO não está no Vultr S3!")
                     return [], historico
                 
                 print(f"\n📊 Resumo:")
@@ -6333,7 +6411,6 @@ if __name__ == "__main__":
                             # Imports necessários
                             import tempfile
                             import shutil
-                            from googleapiclient.http import MediaIoBaseDownload
                             
                             # Configurar serviços
                             if usar_gemini:
@@ -6346,8 +6423,6 @@ if __name__ == "__main__":
                             else:
                                 client = None
                             
-                            drive_service = configurar_google_drive_service_completo()
-                            
                             # Pasta temporária
                             pasta_temp = tempfile.mkdtemp(prefix="cartoes_novos_")
                             print(f"📁 Pasta temporária: {pasta_temp}")
@@ -6357,9 +6432,8 @@ if __name__ == "__main__":
                             print("📚 CARREGANDO GABARITOS AUTOMATICAMENTE")
                             print(f"{'='*80}")
 
-                            gabaritos_dict = carregar_gabaritos_do_drive(
-                                drive_service,
-                                pasta_drive_id,
+                            gabaritos_dict = carregar_gabaritos_do_s3(
+                                storage_s3,
                                 pasta_temp,
                                 debug=debug_mode,
                             )
@@ -6410,14 +6484,13 @@ if __name__ == "__main__":
                                             int((itens_status_processados / max(total_status_items, 1)) * 100)
                                         )
                                         
-                                        # Baixar PDF
-                                        request = drive_service.files().get_media(fileId=pdf_info['id'])
+                                        # Baixar PDF da origem em que ele foi encontrado
                                         pdf_path = os.path.join(pasta_temp, pdf_info['name'])
-                                        with open(pdf_path, 'wb') as f:
-                                            downloader = MediaIoBaseDownload(f, request)
-                                            done = False
-                                            while not done:
-                                                status, done = downloader.next_chunk()
+                                        storage_origem = storages_entrada[pdf_info['source']]
+                                        storage_origem.baixar(
+                                            pdf_info['storage_id'],
+                                            pdf_path,
+                                        )
                                         
                                         print(f"✅ PDF baixado: {pdf_info['name']}")
                                         
@@ -6546,7 +6619,6 @@ if __name__ == "__main__":
                                                 
                                                 print(f"   🔍 DEBUG - Dados extraídos: Escola={dados_aluno.get('escola')}, Aluno={dados_aluno.get('aluno')}, Turma={dados_aluno.get('turma')}, Nasc={dados_aluno.get('nascimento')}, Ano={ano_escolar_pagina}, Questões={num_questoes_pagina}")
                                                 
-                                                pasta_destino_pagina = PASTAS_DESTINO_POR_ANO[ano_escolar_pagina]
                                                 print(f"   📁 Destino: Pasta {rotulo_ano(ano_escolar_pagina)}")
                                                 
                                                 anos_detectados.append(ano_escolar_pagina)
@@ -6617,14 +6689,10 @@ if __name__ == "__main__":
 
                                                 enviar_resultado_para_backend(
                                                     backend_client=backend_client,
-                                                    drive_file_id=f"{pdf_info['id']}:pagina:{pagina_idx}",
                                                     file_name=f"{pdf_info['name']}#pagina_{pagina_idx}",
                                                     dados_aluno=dados_aluno,
                                                     respostas_aluno=respostas_aluno,
-                                                    respostas_gabarito=respostas_gabarito_correto,
                                                     resultado=resultado,
-                                                    questoes_detectadas=questoes_detectadas,
-                                                    origem="monitor_drive_pdf",
                                                     ano_escolar=ano_escolar_pagina,
                                                 )
                                                 itens_status_processados += 1
@@ -6671,16 +6739,16 @@ if __name__ == "__main__":
                                                 f"(maioria de {quantidade_maioria}; {resumo})"
                                             )
 
-                                        pasta_destino_pdf = PASTAS_DESTINO_POR_ANO[ano_escolar_pdf]
                                         num_questoes_pdf = QUESTOES_POR_ANO[ano_escolar_pdf]
                                         
                                         # Marcar PDF como processado (ID + NOME + PASTA DESTINO)
                                         nome_sem_ext = os.path.splitext(pdf_info['name'])[0].lower()
                                         arquivos_processados_agora.append({
                                             'id': pdf_info['id'],
+                                            'storage_id': pdf_info['storage_id'],
+                                            'source': pdf_info['source'],
                                             'nome_sem_ext': nome_sem_ext,
                                             'nome_original': pdf_info['name'],
-                                            'pasta_destino': pasta_destino_pdf,  # 🆕 Usa pasta detectada
                                             'num_questoes': num_questoes_pdf,
                                             'ano_escolar': ano_escolar_pdf,
                                         })
@@ -6715,14 +6783,13 @@ if __name__ == "__main__":
                                             int((itens_status_processados / max(total_status_items, 1)) * 100)
                                         )
                                         
-                                        # Baixar imagem
-                                        request = drive_service.files().get_media(fileId=cartao_info['id'])
+                                        # Baixar imagem da origem em que ela foi encontrada
                                         cartao_path = os.path.join(pasta_temp, cartao_info['name'])
-                                        with open(cartao_path, 'wb') as f:
-                                            downloader = MediaIoBaseDownload(f, request)
-                                            done = False
-                                            while not done:
-                                                status, done = downloader.next_chunk()
+                                        storage_origem = storages_entrada[cartao_info['source']]
+                                        storage_origem.baixar(
+                                            cartao_info['storage_id'],
+                                            cartao_path,
+                                        )
                                         
                                         # Converter para P&B se habilitado
                                         if converter_pb:
@@ -6797,7 +6864,6 @@ if __name__ == "__main__":
                                         
                                         print(f"   🔍 DEBUG - Dados extraídos: Escola={dados_aluno.get('escola')}, Aluno={dados_aluno.get('aluno')}, Turma={dados_aluno.get('turma')}, Nasc={dados_aluno.get('nascimento')}, Ano={ano_escolar_aluno}, Questões={num_questoes_aluno}")
                                         
-                                        pasta_destino_atual = PASTAS_DESTINO_POR_ANO[ano_escolar_aluno]
                                         print(
                                             f"   📁 Destino: Pasta {rotulo_ano(ano_escolar_aluno)} "
                                             f"({num_questoes_aluno} questões)"
@@ -6854,14 +6920,10 @@ if __name__ == "__main__":
 
                                         enviar_resultado_para_backend(
                                             backend_client=backend_client,
-                                            drive_file_id=cartao_info['id'],
                                             file_name=cartao_info['name'],
                                             dados_aluno=dados_aluno,
                                             respostas_aluno=respostas_aluno,
-                                            respostas_gabarito=respostas_gabarito_correto,
                                             resultado=resultado,
-                                            questoes_detectadas=questoes_detectadas,
-                                            origem="monitor_drive_imagem",
                                             ano_escolar=ano_escolar_aluno,
                                         )
                                         itens_status_processados += 1
@@ -6875,9 +6937,10 @@ if __name__ == "__main__":
                                         nome_sem_ext = os.path.splitext(cartao_info['name'])[0].lower()
                                         arquivos_processados_agora.append({
                                             'id': cartao_info['id'],
+                                            'storage_id': cartao_info['storage_id'],
+                                            'source': cartao_info['source'],
                                             'nome_sem_ext': nome_sem_ext,
                                             'nome_original': cartao_info['name'],
-                                            'pasta_destino': pasta_destino_atual,  # 🆕 Guardar pasta específica
                                             'num_questoes': num_questoes_aluno,
                                             'ano_escolar': ano_escolar_aluno,
                                         })
@@ -6897,22 +6960,18 @@ if __name__ == "__main__":
                                 
                                 # 🆕 MOVER CADA ARQUIVO PARA SUA PASTA ESPECÍFICA
                                 for arquivo_proc in arquivos_processados_agora:
-                                    pasta_destino_arquivo = arquivo_proc.get('pasta_destino')
                                     ano_escolar_arquivo = arquivo_proc.get('ano_escolar')
-                                    
-                                    if pasta_destino_arquivo:
-                                        print(
-                                            f"   📁 {arquivo_proc['nome_original']} → "
-                                            f"{rotulo_ano(ano_escolar_arquivo)}"
-                                        )
-                                        
-                                        mover_arquivo_no_drive(
-                                            drive_service,
-                                            arquivo_proc['id'],
-                                            pasta_drive_id,
-                                            pasta_destino_arquivo,  # 🆕 Usa pasta específica do aluno
-                                            arquivo_proc['nome_original']
-                                        )
+                                    origem_arquivo = arquivo_proc['source']
+                                    storage_origem = storages_entrada[origem_arquivo]
+
+                                    print(
+                                        f"   📁 {arquivo_proc['nome_original']} → "
+                                        f"{storage_origem.destino_label(ano_escolar_arquivo)}"
+                                    )
+                                    storage_origem.mover_para_processados(
+                                        arquivo_proc['storage_id'],
+                                        ano_escolar_arquivo,
+                                    )
                             
                             # 4. Atualizar histórico com IDs e NOMES processados
                             historico['ids'].update(item['id'] for item in arquivos_processados_agora)
@@ -7006,6 +7065,6 @@ if __name__ == "__main__":
     print("  • Detectar via IA e OCR o ano de cada aluno")
     print("  • Corrigir usando o gabarito correto")
     print("  • Enviar para a planilha correta (4°, 5°, 8° ou 9° ano)")
-    print("  • Mover para a pasta correta no Drive")
+    print("  • Mover para o prefixo correto no Vultr S3")
     print("=" * 80)
     
